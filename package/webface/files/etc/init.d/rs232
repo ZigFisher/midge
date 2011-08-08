@@ -1,0 +1,156 @@
+#!/bin/sh
+
+# E1 modules boot configuration script
+# Written by Polyakov A.U. <artpol84@gmail.com>
+
+. /etc/templates/oem-vars
+
+kdb="kdb"
+rscfg="/bin/stty"
+
+_rs232_node_defcfg(){	
+	local slot=$1
+	local dev=$2	
+    
+	kdb rm sls sys_pcicfg_s${slot}_${dev}*
+	# default rate 115200
+	kdb set sys_pcicfg_s${slot}_${dev}_baudrate="115200"
+	# Character size = 8 bit
+	kdb set sys_pcicfg_s${slot}_${dev}_cs="cs8"
+	# One stop bit by default
+	kdb set sys_pcicfg_s${slot}_${dev}_stopb="-cstopb"
+	# parity: none
+	kdb set sys_pcicfg_s${slot}_${dev}_parity="none"
+	# 
+	kdb set sys_pcicfg_s${slot}_${dev}_fctrl="0"
+	kdb set sys_pcicfg_s${slot}_${dev}_sigfwd="0"
+}
+
+_rs232_defcfg(){
+	local slot=$1
+    local type=$2
+	local ifnum=`kdb get sys_pcitbl_s${slot}_ifnum`
+	local i=0
+
+	kdb set sys_pcicfg_s${slot}_ifnum="$ifnum"
+	while [ $i -lt $ifnum ]; do
+		_rs232_node_defcfg $slot $i $type
+		i=`expr $i + 1`
+	done
+}
+
+_rs232_nodecfg(){
+	local node=$1
+	local slot=$2
+	local dev=$3
+
+	# Hardware settings
+	unset cs stopb baudrate parity
+	eval `$kdb -qq sls sys_pcicfg_s${slot}_${dev}_`
+	case "$parity" in
+	"none")
+		parity="-parenb -parodd" 
+		;;
+	"even")
+		parity="parenb -parodd"
+		;;
+	"odd")
+		parity="parenb parodd"
+		;;
+	esac
+	if [ -f "$rscfg" ]; then 
+		$rscfg -F /dev/$node $baudrate $cs $stopb $parity
+	else
+		echo "No configuration tool: $rscfg"
+		return 
+	fi
+	
+	if [ -f "$mr17s_cfg" ]; then
+		$mr17s_cfg -n /dev/$node -f "$fctrl" -s "$sigfwd"	
+	else
+		echo "No configuration tool: $mr17s_cfg"
+		return 
+	fi
+}
+
+_rs232_modcfg(){
+	local slot=$1
+	local dev=$2
+	local ifaces
+	local ifnum
+	local iface
+	
+	nodes=`kdb get sys_pcitbl_s${slot}_ifaces`
+	cur_type=`kdb get sys_pcitbl_s${slot}_iftype`
+	cfg_type=`kdb get sys_pcicfg_s${slot}_iftype`
+	cur_cnt=`kdb get sys_pcitbl_s${slot}_ifnum`
+	cfg_cnt=`kdb get sys_pcicfg_s${slot}_ifnum`
+	if [ -z "$cfg_type" ] || [ -z "$cfg_cnt" ]; then
+		kdb set sys_pcicfg_s${slot}_iftype="$cur_type"
+		kdb set sys_pcicfg_s${slot}_ifaces="$ifaces"
+		_rs232_defcfg "$slot" "$cur_type"
+	elif [ "$cur_cnt" -gt "$cfg_cnt" ]; then
+		tmp="$cfg_cnt"
+		while [ "$tmp" -lt "$cur_cnt" ]; do
+			_rs232_node_defcfg "$slot" "$tmp"
+			tmp=`expr $tmp + 1`
+		done
+	fi
+	
+	nodes=`kdb get sys_pcitbl_s${slot}_ifaces`
+	nodenum=0
+	for node in $nodes; do
+		if [ -n "$dev" ]; then
+			if [ "$dev" -eq "$nodenum" ]; then
+				_rs232_nodecfg "$node" "$slot" "$nodenum"
+				break
+			fi
+		else
+			_rs232_nodecfg "$node" "$slot" "$nodenum"
+		fi
+		nodenum=`expr $nodenum + 1`
+	done
+}
+
+	
+_rs232_start(){
+	local iface1
+	echo "Configuring RS232: "
+	eval `kdb sls -q sys_pcitbl_`
+	for s in $slots; do
+		unset type iface1
+		eval "type=\$s${s}_iftype"
+		eval "num=\$s${s}_ifnum"
+		eval "ifaces=\$s${s}_ifaces"
+		if [ "$type" != "$mr17s_drvname" ]; then
+			continue
+		fi
+		for i in $ifaces; do
+			iface1=$i
+			break
+		done
+		type=""
+		if [ -f /sys/bus/pci/drivers/${mr17s_drvname}/${iface1}/dev_type ]; then
+			type="-"`cat /sys/bus/pci/drivers/${mr17s_drvname}/${iface1}/dev_type`
+		fi
+    	echo "    ${mr17s_modname}${oem_ifpfx}${num}${type}($ifaces) "
+	    _rs232_modcfg $s
+	done
+	echo
+}
+ 
+_e1_stop(){
+	return 0
+}
+
+case "$1" in
+	start) 
+		_rs232_start 
+		;;
+	stop)
+		_rs232_stop 
+		;;
+	restart)
+		_rs232_modcfg $2 $3
+		;;
+esac

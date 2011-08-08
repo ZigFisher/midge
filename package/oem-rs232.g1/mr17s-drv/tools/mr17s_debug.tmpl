@@ -1,0 +1,55 @@
+#!/bin/sh
+# Sigrand SG-17H debug tool 
+# for Linux kernel v 2.6 drivers
+#
+#	Written 2007 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+DRVNAME=@DRVNAME@
+MANUFACTURER=@MANUFACTURER@ 
+MODNAME=@MODNAME@
+SYSFS_PATH="/sys/class/tty/"
+
+#---------------------------------------------------------
+
+print_usage()
+{
+    echo "$MANUFACTURER $MODNAME IO window debug tool"
+    echo "Usage:"
+    echo " $TOOLNAME <node> s <addr> <val>          - set HDLC register <addr> to <val>"
+    echo " $TOOLNAME <node> r <addr> [<count>]      - read <count> bytes starting from <addr> fo HDLC"
+}
+
+
+#---------------------------------------------------------
+
+CHIP_NUM=0
+
+cdir=`pwd`
+node=$1
+
+if [ -d "$SYSFS_PATH/${node}/device" ]; then
+	cd "$SYSFS_PATH/${node}/device"
+else
+	echo "$0: No such device $1"
+	exit
+fi
+
+case $2 in
+   "s")
+      	echo "$3 $4" > winwrite
+	    cat winwrite
+    	echo
+	    ;;
+    "r")
+	    echo "$3 $4" > winread
+    	cat winread
+	    ;;
+    *)
+	    echo "Bad parameters!"
+esac
+
+
+
+    

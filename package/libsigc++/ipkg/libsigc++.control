@@ -1,0 +1,6 @@
+Package: libsigc++
+Priority: optional
+Section: libs
+Source: http://ftp.gnome.org/pub/GNOME/sources/libsigc++/2.0/libsigc++-2.0.18.tar.gz
+Description: Typesafe callback system for standard C++
+

@@ -1,0 +1,138 @@
+#!/bin/sh
+
+. /bin/midge_functions
+
+[ -z "$iface" ] && iface=$2
+NAME="qos"
+DESC="QoS"
+TC="cmd `which tc`"
+IFCONFIG="cmd `which ifconfig`"
+CLASS="$TC class"
+QDISC="$TC qdisc"
+FILTER="$TC filter"
+
+
+if [ -z "$iface" ]; then
+	echo "Please set \$iface or \$2"
+	exit 1
+fi
+
+eval `kdb -qq sls sys_iface_${iface}_`
+
+start_htb(){
+	local iface=$1
+	[ "x$qos_htb_default" != "x0" -a -n "$qos_htb_default" ] && default_class="default $qos_htb_default"
+	$TC qdisc add dev $iface root handle 1: htb $default_class
+	
+	for key in `kdb kls sys_iface_${iface}_qos_htb_class_*`; do 
+		val=`kdb get $key`
+		unset enabled name parent classid rate ceil _ceil qdisc _qdisc handle
+		eval "$val"
+		[ -n "$ceil" ] && _ceil="ceil $ceil"
+		
+		[ "x${enabled}x" = "xx" -o "x${enabled}x" = "x0x" ] && continue
+		
+		# add class
+		$TC class add dev $iface parent $parent classid $classid htb rate $rate $_ceil
+		
+		# add qdisc 
+		if [ -n "$qdisc" ]; then
+			# replace '#' in qdisc with spaces
+			_qdisc=`echo $qdisc |sed s/#/" "/g`
+			
+			# in qdisc $parent == $classid, $handle == second part of $classid
+			handle=`echo $classid |awk -F ':' '{print $2}'`
+
+			$TC qdisc add dev $iface parent $classid handle ${handle}:0 $_qdisc || warn "Adding qdisc failed (for class \"$name\")"
+		fi
+	done
+	
+	for key in `kdb kls sys_iface_${iface}_qos_htb_filter_*`; do 
+		val=`kdb get $key`
+		unset enabled name prio proto src dst src_port dst_port flowid
+		_proto=""
+		_src_port=""
+		_dst_port=""
+		_dst=""
+		_src=""
+		eval "$val"
+		
+		[ "x${enabled}x" = "xx" -o "x${enabled}x" = "x0x" ] && continue
+		
+		if [ "$proto" != "any" ]; then
+			_proto="match ip protocol"
+			[ "$proto" = "icmp" ] && _proto="$_proto 1 0xff"
+			[ "$proto" = "tcp" ] && _proto="$_proto 6 0xff"
+			[ "$proto" = "udp" ] && _proto="$_proto 17 0xff"
+		fi
+		
+		[ "$src_port" != "any" ] && _src_port="match ip sport $src_port 0xffff"
+		[ "$dst_port" != "any" ] && _dst_port="match ip dport $dst_port 0xffff"
+		[ "$dst" != "0.0.0.0/0" ] && _dst="match ip dst $dst"
+		[ "$src" != "0.0.0.0/0" ] && _src="match ip src $src"
+		
+		# if no one of criteria is set - set dummy src
+		[ -z "$_proto" -a -z "$_src_port" -a -z "$_dst_port" -a -z "$_dst" -a -z "$_src" ] && _src="match ip src $src"
+		
+		$TC filter add dev $iface parent 1: protocol ip prio $prio u32 $_proto $_src_port $_dst_port $_dst $_src flowid $flowid
+	done
+}
+
+stop(){
+	echo "Stoping $NAME on $iface."
+	$QDISC del dev $iface root 2>/dev/null
+}
+
+start(){
+	$QDISC del dev $iface root 2>/dev/null
+
+    [ -n "$qos_txqueuelen" ] && $IFCONFIG $iface txqueuelen $qos_txqueuelen
+
+	[ -z "$qos_sch" -o "$qos_sch" = "pfifo_fast" ] && return 0
+	
+	echo "Starting $NAME on $iface."
+	case $qos_sch in 
+	pfifo|bfifo)
+		$QDISC add dev $iface handle 1: root dsmark indices 1
+		$QDISC add dev $iface handle 2:0  parent 1:0 $qos_sch limit $qos_fifo_limit
+	;;
+	htb)
+		eval `kdb -qqc ls sys_iface_${iface}_qos_htb_class_*`
+		if [ "$kdb_lines_count" != 0 ]; then
+			start_htb $iface
+		fi
+	;;
+	tbf)
+		l="latency 20ms"
+		[ -n "$qos_tbf_limit" ] && l="limit $qos_tbf_limit"
+		[ -n "$qos_tbf_latency" ] && l="latency $qos_tbf_latency"
+		rate="rate ${qos_tbf_rate:-512Kbit}"
+		buffer="buffer ${qos_tbf_buffer:-4096}"
+		$QDISC add dev $iface root tbf $rate $l $buffer
+	;;
+	sqf)
+		$QDISC add dev $iface root sfq perturb 10
+	;;
+	esfq)
+		limit=${qos_esfq_limit:-128}
+		depth=${qos_esfq_depth:-128}
+		hash=${qos_esfq_hash:-dst}
+		divisor=${qos_esfq_divisor:-11}
+		$QDISC add dev $iface root esfq limit $limit depth $depth hash $hash divisor $divisor perturb 10
+	;;
+	esac
+}
+
+
+case $1 in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	*)
+		stop
+		start
+		;;
+esac

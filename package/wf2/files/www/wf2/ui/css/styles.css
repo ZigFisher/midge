@@ -1,0 +1,304 @@
+html, body {margin:0; padding:0; width:100%; height:100%;/* overflow:hidden;*/}
+
+html {
+	width: 100%;
+	height: 100%;
+	text-align: center;
+}
+
+html * {
+	margin: 0;
+	/*padding: 0;*/
+}
+
+body {
+	margin: 0;
+	padding: 0;
+	width: 100%;
+	height: 100%;
+	color: #fff;
+	font-family: Arial, Helvetica, sans-serif;
+	font-size: 10pt;
+	background-color: black;
+}
+
+#mainmain {
+	width: 100%;
+	height: 100%;
+	text-align: center;
+}
+
+#wrapper {
+	width: 1000px;
+	margin: 0 auto;
+	background-color: #666;
+/*	border: 1px solid #0c0;*/
+}
+
+#top {
+	height: 151px;
+	background-image: url(../img/header.jpg);
+}
+
+/* #################### CONTENT #################### */
+#content {	
+	width: 100%;
+	background-image: url(../img/header_grad.jpg);
+	background-repeat: repeat-x;
+	border: none;
+}
+
+#left {
+	float: left;
+	width: 210px;
+	margin-top: 30px;
+	text-align: left;
+	/*border: 1px solid #c00;*/
+}
+
+#right {
+	float: right;
+	width: 780px;
+	margin-top: 5px;
+	text-align: left;
+	/*border: 1px solid #00c;*/
+}
+
+#right ul.tabs-nav {
+	/*background-color: #c00;*/
+}
+
+#right input.button {
+	margin-left: 261px;
+}
+
+/* --------------------- LEFT MENU ----------------------- */
+#left_menu {
+	/*margin: 46px 0px 0px 10px;*/
+	margin: 0px 0px 0px 10px;
+	padding: 5px;
+	margin-bottom: 100px;
+	background-image: url(../img/menu_grad.jpg);
+	background-repeat: repeat-x;
+	text-align: left;
+	color: #424242;
+}
+
+/* ------------- TABLES ---------------- */
+#conttable {
+	width: 745px;
+	/*margin: 10px 0 5px 0;*/
+	border: 1px solid #000;
+	border-bottom: none;
+}
+
+#conttable td {
+	border-collapse: collapse;
+	padding: 4px 0 4px 10px;
+	border-bottom: 1px solid #000;
+	background-color: #737373;
+}
+
+#conttable td.disabled {
+	color: #969696;
+}
+
+#conttable tr.selected td {
+	background-color: green;
+}
+
+#conttable p {
+	color: #ccc;
+	font-family: Arial, Helvetica, sans-serif;
+	font-size: 90%;
+	padding: 0;
+}
+
+#conttable td.tdleft {
+	background-color: #898989;
+	font-weight: bold;
+	border-right: 1px solid #000;
+	width: 240px;
+}
+
+#conttable th {
+	height: 28px;
+	padding: 0 0 0 10px;
+	border: 0;
+	background-image: url(../img/table_head.png);
+	border-bottom: 1px solid #000;
+}
+
+#conttable td.header {
+	height: 28px;
+	padding: 0 0 0 10px;
+	border: 0;
+	background-image: url(../img/table_head.png);
+	border-bottom: 1px solid #000;
+}
+
+#conttable label.error {
+	display: block;
+	text-align: left;
+	background-image: url(../img/message2-small.jpg);
+	background-position: 2%;
+	background-repeat: no-repeat;
+	padding: 5px 5px 5px 30px;
+	color: yellow;
+}
+
+#conttable label span {
+	color:#aa0808;
+	font-size: 120%;
+	font-weight: bold;
+}
+
+#conttable input {
+	width: 250px;
+	padding: 2px 3px;
+	font-size: 90%;
+	border: 1px solid #6c9;
+}
+
+#conttable input.buttonWidget {
+	width: auto;
+}
+
+#conttable input.table {
+	width: 80%;
+}
+
+#conttable input.error {
+	background-color: yellow;
+}
+
+#conttable textarea {
+	width: 350px;
+	padding: 2px 3px;
+	font-size: 90%;
+	color: #333;
+	border: 1px solid #6c9;
+}
+
+#conttable input.check {
+	width: 18px;
+	border: none;
+}
+
+#conttable input.radio {
+	width: 18px;
+	border: none;
+}
+
+.message {
+	display: none;
+	margin-bottom: 10px;
+	margin-top: 10px;
+	padding: 10px 10px 10px 60px;
+	background-color: #444;
+	color: #5cffff;
+	text-align: left;
+	background-position: 2%;
+	background-repeat: no-repeat;
+}
+
+.error_message {
+	background-image: url(../img/message2.jpg);
+}
+
+.success_message {
+	background-image: url(../img/message1.jpg);
+}
+
+#kdb {
+	margin: 20px 0px 0px 10px;
+	padding: 5px;
+	color: #5cffff;
+	text-align: left;
+}
+
+/* ---------- FOOTER ---------- */
+
+#footer {
+	clear: both;
+	width: 1000px;
+	margin: 0 auto;
+	margin-top: 50px;
+	font-size: 11px;
+	background-image: url(../img/footer_bg.png);
+}
+
+#footer p {
+	text-align: center;
+	padding: 33px 0 36px 0;
+}
+
+a.clicked {
+	font-weight: bold;
+}
+
+div.pre {
+	font-family: monospace;
+}
+
+.fieldUpdated {
+	background-color: green;
+}
+
+tr.tableHeader {
+	font-weight: bold;
+}
+
+div.scrollable {
+	max-height: 450px;
+	overflow: auto;
+}
+
+/* applied to lists (like in VoIP Route table). */
+form div.scrollable {
+	width: 765px;
+}
+
+td div.scrollable {
+	width: 745px;
+	height: auto;
+}
+
+table tfoot tr td {
+	font-size: 10px;
+}
+
+td.clickable {
+	cursor: pointer;
+	text-decoration: underline;
+}
+
+td.clickable:hover {
+	color: yellow;
+}
+
+#conttable input.voipQualityPayload {
+	width: 20%;
+}
+
+#status {
+	margin-top: 15px;
+	float: left;
+	color: #c0c0c0;
+	width: 90%;
+	text-align: left;
+	padding-left: 10px;
+}
+
+#status .error {
+	color: yellow;
+}
+
+#consoleDiv {
+	height: 450px;
+	width: 745px;
+}
+
+#consoleCursor {
+	display: inline;
+}

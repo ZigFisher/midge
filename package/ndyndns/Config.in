@@ -1,0 +1,15 @@
+config BR2_PACKAGE_NDYNDNS
+	prompt "ndyndns........................... DynDNS.com update daemon"
+	tristate
+	default N
+	select BR2_COMPILE_CURL
+	help
+	    The ndyndns daemon is an update client for DynDNS.com. It
+	    checks for an IP address change every two minutes, avoids
+	    unnecessary updates, reports errors, logs to syslog, and
+	    generally complies with everything required of a proper dyndns
+	    client.
+
+	    http://ndyndns.googlecode.com/
+
+

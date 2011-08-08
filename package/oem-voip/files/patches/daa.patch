@@ -1,0 +1,726 @@
+diff -ruiN daa_pure/configure.in daa/configure.in
+--- daa_pure/configure.in	2009-04-21 16:19:43.000000000 +0700
++++ daa/configure.in	2009-04-21 16:19:43.000000000 +0700
+@@ -23,7 +23,7 @@
+ 
+ AC_REVISION($Revision: 1.9 $)
+ 
+-AC_INIT([IFX TAPI DAA plugin], [1.0.2.0], [Infineon Technologies AG], [drv_daa])
++AC_INIT([IFX TAPI DAA plugin], [1.0.2.0], [Infineon Technologies AG], [drv_daa.ko])
+ 
+ AM_INIT_AUTOMAKE
+ 
+diff -ruiN daa_pure/src/drv_daa_api.c daa/src/drv_daa_api.c
+--- daa_pure/src/drv_daa_api.c	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_api.c	2009-04-21 16:19:43.000000000 +0700
+@@ -112,7 +112,7 @@
+            ("DAA ERR DAA_COM_init failed for daa resource %d\n\r", nDaa));
+ 
+    /* initialize board specifics */
+-   err = gDaaFctMap[nDaa].init();
++   err = gDaaFctMap[nDaa].init(nDaa);
+    if (err != IFX_SUCCESS)
+       TRACE(DAA_DRV, DBG_LEVEL_HIGH,
+            ("DAA ERR DAA_board_init failed for daa resource %d\n\r", nDaa));
+@@ -162,7 +162,7 @@
+    if (gDaaFctMap[nDaa].hookSet == IFX_NULL)
+       return IFX_ERROR;
+ 
+-   return gDaaFctMap[nDaa].hookSet(offHook);
++   return gDaaFctMap[nDaa].hookSet(nDaa,offHook);
+ }
+ 
+ /** **************************************************************************
+@@ -178,6 +178,6 @@
+    if (gDaaFctMap[nDaa].hookGet == IFX_NULL)
+       return IFX_ERROR;
+ 
+-   return gDaaFctMap[nDaa].hookGet(pOffHook);
++   return gDaaFctMap[nDaa].hookGet(nDaa,pOffHook);
+ }
+ 
+diff -ruiN daa_pure/src/drv_daa_board_sg.c daa/src/drv_daa_board_sg.c
+--- daa_pure/src/drv_daa_board_sg.c	1970-01-01 07:00:00.000000000 +0700
++++ daa/src/drv_daa_board_sg.c	2009-04-21 16:19:43.000000000 +0700
+@@ -0,0 +1,242 @@
++/******************************************************************************
++
++                               Copyright (c) 2007
++                            Infineon Technologies AG
++                     Am Campeon 1-12; 81726 Munich, Germany
++
++  THE DELIVERY OF THIS SOFTWARE AS WELL AS THE HEREBY GRANTED NON-EXCLUSIVE,
++  WORLDWIDE LICENSE TO USE, COPY, MODIFY, DISTRIBUTE AND SUBLICENSE THIS
++  SOFTWARE IS FREE OF CHARGE.
++
++  THE LICENSED SOFTWARE IS PROVIDED "AS IS" AND INFINEON EXPRESSLY DISCLAIMS
++  ALL REPRESENTATIONS AND WARRANTIES, WHETHER EXPRESS OR IMPLIED, INCLUDING
++  WITHOUT LIMITATION, WARRANTIES OR REPRESENTATIONS OF WORKMANSHIP,
++  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, DURABILITY, THAT THE
++  OPERATING OF THE LICENSED SOFTWARE WILL BE ERROR FREE OR FREE OF ANY THIRD
++  PARTY CLAIMS, INCLUDING WITHOUT LIMITATION CLAIMS OF THIRD PARTY INTELLECTUAL
++  PROPERTY INFRINGEMENT.
++
++  EXCEPT FOR ANY LIABILITY DUE TO WILFUL ACTS OR GROSS NEGLIGENCE AND EXCEPT
++  FOR ANY PERSONAL INJURY INFINEON SHALL IN NO EVENT BE LIABLE FOR ANY CLAIM
++  OR DAMAGES OF ANY KIND, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
++  ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++  DEALINGS IN THE SOFTWARE.
++
++******************************************************************************/
++#ifdef DRV_DAA_BOARD_SG
++
++#define CHANS_PER_DEV 2
++
++#include "drv_daa.h"
++#include "drv_daa_common.h"
++
++/* board specific includes */
++#include "vinetic_io.h"
++#include "drv_vinetic_gpio.h"
++
++extern DAA_FUNCTION_MAP_t        gDaaFctMap[];
++extern IFX_TAPI_DRV_CTX_DAA_t*   DAA_CtxGet(void);
++
++static int vinDevIoHandle[ DRV_DAA_MAX_DAA_CHANNELS/CHANS_PER_DEV ];
++static int vinGPIO_io_hook[ CHANS_PER_DEV ];
++static int vinGPIO_io_ring[ CHANS_PER_DEV ];
++
++/*{{{ Common stub functions*/
++static IFX_return_t 
++daa_common_batGet(IFX_uint16_t nDaa, IFX_enDis_t * enDis)
++{
++	return IFX_SUCCESS;
++}
++
++static IFX_return_t 
++daa_common_polGet(IFX_uint16_t nDaa, IFX_enDis_t * enDis)
++{
++	return IFX_SUCCESS;
++}
++
++#ifdef DAA_APOH
++static IFX_return_t 
++daa_common_apohGet(IFX_uint16_t nDaa, IFX_enDis_t * enDis)
++{
++	return IFX_SUCCESS;
++}
++#endif
++/*}}}*/
++/** **************************************************************************
++   gpio callback functions for the ringQ pin,
++   this functions decodes the status and triggers the generic state machine
++*/
++/*{{{*/
++static void 
++daa_common_ring_0_cb (int nDev, int nCh, unsigned short nEvt)
++{
++	return irq_DAA_COM_ring_cb ( (nDev * CHANS_PER_DEV) );
++}
++static void 
++daa_common_ring_1_cb (int nDev, int nCh, unsigned short nEvt)
++{
++	return irq_DAA_COM_ring_cb ( (nDev * CHANS_PER_DEV + 1) );
++}/*}}}*/
++/** **************************************************************************
++   initialisation routine of daa N, implementation is system dependant.
++   This function is getting called on IFX_TAPI_LINE_TYPE_SET ioctl, if
++   the channel is configured as FXO. This is the place to reserve and
++   configure GPIOs for later use.
++*/
++static IFX_return_t 
++daa_common_init (IFX_uint16_t nDaa)
++{	/*{{{*/
++	int const nDev = nDaa / CHANS_PER_DEV; /*{ 0 0 1 1 2 2 ...}*/
++	int const nChannel = nDaa % CHANS_PER_DEV; /*{ 0 1 0 1 ...}*/
++	int * const ioHandle = &vinDevIoHandle [nDev];
++	VINETIC_GPIO_CONFIG ioCfg;
++	int ret;
++	int vinDevHandle;
++	static int dev_allready_opened [DRV_DAA_MAX_DAA_CHANNELS/CHANS_PER_DEV]={0};
++
++	if( !dev_allready_opened[ nDev ]){
++		int i;
++		int mask=0;
++		vinDevHandle = VINETIC_OpenKernel ( nDev, 0 );
++		if (vinDevHandle == IFX_ERROR) {
++			printk(KERN_ERR "DAA: VINETIC_OpenKernel(%d,0) failed\n", nDev);
++			return IFX_ERROR;
++		}
++		dev_allready_opened [nDev] = 1;
++
++		for(i=0;i<CHANS_PER_DEV;i++){
++			mask |= (vinGPIO_io_hook [i] | vinGPIO_io_ring [i]);
++		}
++		*ioHandle = VINETIC_GpioReserve (vinDevHandle, mask);
++		if (*ioHandle == 0){
++			printk(KERN_ERR "DAA: VINETIC_GpioReserve failed\n");
++			return IFX_ERROR;
++		}
++	}
++
++	/* HOOKQ */
++	ioCfg.nMode = GPIO_MODE_OUTPUT;
++	ioCfg.nGpio = vinGPIO_io_hook[ nChannel ];
++	ret = VINETIC_GpioConfig(*ioHandle, &ioCfg);
++	if (ret != IFX_SUCCESS) {
++		printk(KERN_ERR "DAA: hook cfg output failed\n\r");
++		return IFX_ERROR;
++	}
++
++	/* RINGQ */
++	ioCfg.nMode = GPIO_MODE_INPUT | GPIO_MODE_INT | GPIO_INT_FALLING;
++	ioCfg.nGpio = vinGPIO_io_ring[ nChannel ];
++	if(nChannel==0){
++		ioCfg.callback = daa_common_ring_0_cb;
++	} else if(nChannel==1){
++		ioCfg.callback = daa_common_ring_1_cb;
++	}
++	ret = VINETIC_GpioConfig(*ioHandle, &ioCfg);
++	if (ret != IFX_SUCCESS) {
++		printk(KERN_ERR "DAA: ring cfg input failed\n\r");
++		return IFX_ERROR;
++	}
++
++	return ret;
++}/*}}}*/
++/** **************************************************************************
++   daa hook set implementation (board specific)
++   \param nDaa - Daa channel number
++   \param offhook - desired hook state to be set
++   \return IFX_SUCCESS or IFX_ERROR in case of failure
++*/
++static IFX_return_t 
++daa_common_hookSet (IFX_uint16_t nDaa, IFX_TAPI_FXO_HOOK_t offhook)
++{	/*{{{*/
++	int const nDev = nDaa / CHANS_PER_DEV; /*{ 0 0 1 1 2 2 ...}*/
++	int const nChannel = nDaa % CHANS_PER_DEV;
++	int * const ioHandle = &vinDevIoHandle[nDev];
++	int ret = IFX_SUCCESS;
++
++	/* HOOKQ control GPIO 0 / 4
++	offhook => pin locic low
++	onhook  => pin logic high */
++	if (*ioHandle != 0) {
++		ret = VINETIC_GpioSet(*ioHandle,
++				(offhook == IFX_TAPI_FXO_HOOK_OFFHOOK) ?
++				0x00 : vinGPIO_io_hook[ nChannel ],
++				vinGPIO_io_hook[ nChannel ]);
++	} else {
++		ret = IFX_ERROR;
++	}
++	return ret;
++}/*}}}*/
++/** **************************************************************************
++   daa hook get implementation (board specific)
++   \param nDaa - Daa channel number
++   \param offhook - current hook state (read back)
++   \return IFX_SUCCESS or IFX_ERROR in case of failure
++*/
++static IFX_return_t 
++daa_common_hookGet (IFX_uint16_t nDaa, IFX_TAPI_FXO_HOOK_t *offhook)
++{/*{{{*/
++	int const nDev = nDaa / CHANS_PER_DEV; /*{ 0 0 1 1 2 2 ...}*/
++	int const nChannel = nDaa % CHANS_PER_DEV;
++	int * const ioHandle = &vinDevIoHandle[nDev];
++	unsigned short get;
++	int ret = IFX_SUCCESS;
++
++	/* HOOKQ control GPIO2 bit 0x04
++		offhook => pin locic low
++		onhook  => pin logic high */
++	if (*ioHandle != 0){
++		ret = VINETIC_GpioGet(*ioHandle, &get, 
++				vinGPIO_io_hook[ nChannel ]);
++		*offhook = (! get) ? IFX_TAPI_FXO_HOOK_OFFHOOK : 
++				IFX_TAPI_FXO_HOOK_ONHOOK;
++	} else {
++		ret = IFX_ERROR;
++	}
++	return ret;
++}/*}}}*/
++/** **************************************************************************
++   registration of system specific functions.
++   This function is getting called on insmod of drv_daa in Linux sytems.
++   Note that at this time you cannot access other device's GPIOs as
++   they aren't yet initialized.
++*/
++IFX_return_t daa_board_OnInsmod (void)
++{/*{{{*/
++	int i;
++
++	memset(vinDevIoHandle, 0, sizeof(vinDevIoHandle));
++	/* Channel 0 PIN numbers */
++	vinGPIO_io_hook[ 0 ] = VINETIC_IO_DEV_GPIO_0; 
++	vinGPIO_io_ring[ 0 ] = VINETIC_IO_DEV_GPIO_2;
++	/* Channel 1 PIN numbers */
++	vinGPIO_io_hook[ 1 ] = VINETIC_IO_DEV_GPIO_4;
++	vinGPIO_io_ring[ 1 ] = VINETIC_IO_DEV_GPIO_6;
++
++	for(i=0; i<DRV_DAA_MAX_DAA_CHANNELS; i++){
++		gDaaFctMap[i].init      = daa_common_init;
++		gDaaFctMap[i].hookSet   = daa_common_hookSet;
++		gDaaFctMap[i].hookGet   = daa_common_hookGet;
++		gDaaFctMap[i].batGet    = daa_common_batGet;
++		gDaaFctMap[i].polGet    = daa_common_polGet;
++#ifdef DAA_APOH
++		gDaaFctMap[i].apohGet   = daa_common_apohGet;
++#endif /* DAA_APOH */
++	}
++
++	/* Registration of VineticDaaCtx */
++	VINETIC_Register_DAA_Ctx(DAA_CtxGet());
++
++	return IFX_SUCCESS;
++}/*}}}*/
++
++IFX_return_t daa_board_OnRmmod (void)
++{/*{{{*/
++	/* De-Registration of VineticDaaCtx 
++	 * pointer not valid now */
++	VINETIC_Register_DAA_Ctx(IFX_NULL);
++
++	return IFX_SUCCESS;
++}/*}}}*/
++
++#endif /* DRV_DAA_BOARD_SG */
++
+diff -ruiN daa_pure/src/drv_daa_board_sg.h daa/src/drv_daa_board_sg.h
+--- daa_pure/src/drv_daa_board_sg.h	1970-01-01 07:00:00.000000000 +0700
++++ daa/src/drv_daa_board_sg.h	2009-04-21 16:19:43.000000000 +0700
+@@ -0,0 +1,45 @@
++#ifndef _DRV_DAA_BOARD_SG_H
++#define _DRV_DAA_BOARD_SG_H
++/******************************************************************************
++
++                               Copyright (c) 2007
++                            Infineon Technologies AG
++                     Am Campeon 1-12; 81726 Munich, Germany
++
++  THE DELIVERY OF THIS SOFTWARE AS WELL AS THE HEREBY GRANTED NON-EXCLUSIVE,
++  WORLDWIDE LICENSE TO USE, COPY, MODIFY, DISTRIBUTE AND SUBLICENSE THIS
++  SOFTWARE IS FREE OF CHARGE.
++
++  THE LICENSED SOFTWARE IS PROVIDED "AS IS" AND INFINEON EXPRESSLY DISCLAIMS
++  ALL REPRESENTATIONS AND WARRANTIES, WHETHER EXPRESS OR IMPLIED, INCLUDING
++  WITHOUT LIMITATION, WARRANTIES OR REPRESENTATIONS OF WORKMANSHIP,
++  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, DURABILITY, THAT THE
++  OPERATING OF THE LICENSED SOFTWARE WILL BE ERROR FREE OR FREE OF ANY THIRD
++  PARTY CLAIMS, INCLUDING WITHOUT LIMITATION CLAIMS OF THIRD PARTY INTELLECTUAL
++  PROPERTY INFRINGEMENT.
++
++  EXCEPT FOR ANY LIABILITY DUE TO WILFUL ACTS OR GROSS NEGLIGENCE AND EXCEPT
++  FOR ANY PERSONAL INJURY INFINEON SHALL IN NO EVENT BE LIABLE FOR ANY CLAIM
++  OR DAMAGES OF ANY KIND, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
++  ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++  DEALINGS IN THE SOFTWARE.
++
++******************************************************************************/
++
++/**
++   \file drv_daa_board_sg.h
++   Board specific implementation / Sigrand VoIP with 16 Vinetic v2.2 chips 
++   on board reference design
++*/
++#include "drv_config.h"
++#ifdef DRV_DAA_BOARD_SG
++
++/** define the number of DAA channels on this system */
++#define DRV_DAA_MAX_DAA_CHANNELS 32
++
++IFX_return_t daa_board_OnInsmod (void);
++IFX_return_t daa_board_OnRmmod  (void);
++
++
++#endif /* DRV_DAA_BOARD_SG */
++#endif /* _DRV_DAA_BOARD_SG_H */
+diff -ruiN daa_pure/src/drv_daa_boards.h daa/src/drv_daa_boards.h
+--- daa_pure/src/drv_daa_boards.h	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_boards.h	2009-04-21 16:19:43.000000000 +0700
+@@ -32,10 +32,13 @@
+    To add support for a new board, include the board header file here
+    and the .c file to the Makefile.am. */
+ 
++/*
+ #include "drv_daa_board_template.h"
+ #include "drv_daa_board_easy3332.h"
+ #include "drv_daa_board_easy50712.h"
+ #include "drv_daa_board_easy3201.h"
++*/
++#include "drv_daa_board_sg.h"
+ 
+ /* check if a boardfile is correctly included / and activated by defines,
+    DRV_DAA_MAX_DAA_CHANNELS is a board specific define which must be
+diff -ruiN daa_pure/src/drv_daa_common.c daa/src/drv_daa_common.c
+--- daa_pure/src/drv_daa_common.c	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_common.c	2009-04-21 16:19:43.000000000 +0700
+@@ -102,7 +102,7 @@
+ 
+    /* hook flash is a short onHook,
+       when the timer expires, we go offHook again */
+-   gDaaFctMap[pDaa->nDaa].hookSet (IFX_ENABLE);
++   gDaaFctMap[pDaa->nDaa].hookSet (pDaa->nDaa, IFX_ENABLE);
+ }
+ 
+ /** **************************************************************************
+@@ -115,7 +115,7 @@
+    DAA_DEV_t *pDaa = &gDaaDev[nDaa];
+    int ret;
+    /* go onHook and start the timer... */
+-   ret = gDaaFctMap[nDaa].hookSet (IFX_DISABLE);
++   ret = gDaaFctMap[nDaa].hookSet (pDaa->nDaa, IFX_DISABLE);
+    if (ret == IFX_SUCCESS)
+    {
+       ret = TAPI_SetTime_Timer (pDaa->tid_flashHook, gnFlashHookTime,
+@@ -327,7 +327,7 @@
+    /* battery state machine init */
+    if (gDaaFctMap[nDaa].batGet != IFX_NULL)
+    {
+-      ret = gDaaFctMap[nDaa].batGet(&bat);
++      ret = gDaaFctMap[nDaa].batGet(nDaa, &bat);
+       pDaa->state_bat   = (bat == IFX_ENABLE) ?
+                            DAA_BAT_STATE_FEEDED : DAA_BAT_STATE_NOT_FEEDED;
+       TRACE(DAA_DRV, DBG_LEVEL_LOW,
+@@ -345,7 +345,7 @@
+    {
+       if (ret == IFX_SUCCESS)
+       {
+-         ret = gDaaFctMap[nDaa].apohGet(&apoh);
++         ret = gDaaFctMap[nDaa].apohGet(nDaa, &apoh);
+          pDaa->state_apoh  = (apoh == IFX_ENABLE) ?
+                               DAA_APOH_STATE_APOH : DAA_APOH_STATE_NOPOH;
+          TRACE(DAA_DRV, DBG_LEVEL_LOW,
+@@ -362,7 +362,7 @@
+    /* pol state machine init */
+    if ((ret == IFX_SUCCESS) && (gDaaFctMap[nDaa].polGet != IFX_NULL))
+    {
+-      ret = gDaaFctMap[nDaa].polGet(&pol);
++      ret = gDaaFctMap[nDaa].polGet(nDaa, &pol);
+       pDaa->state_pol   = (pol == IFX_ENABLE) ?
+                            DAA_POL_STATE_NORMAL : DAA_POL_STATE_REVERSE;
+       TRACE(DAA_DRV, DBG_LEVEL_LOW,
+diff -ruiN daa_pure/src/drv_daa_common.h daa/src/drv_daa_common.h
+--- daa_pure/src/drv_daa_common.h	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_common.h	2009-04-21 16:19:43.000000000 +0700
+@@ -41,12 +41,12 @@
+ /* ============================= */
+ typedef struct
+ {
+-   IFX_return_t (*hookSet) (IFX_TAPI_FXO_HOOK_t);
+-   IFX_return_t (*hookGet) (IFX_TAPI_FXO_HOOK_t *);
+-   IFX_return_t (*batGet)  (IFX_enDis_t *);
+-   IFX_return_t (*apohGet) (IFX_enDis_t *);
+-   IFX_return_t (*polGet)  (IFX_enDis_t *);
+-   IFX_return_t (*init)    (void);
++   IFX_return_t (*hookSet) (IFX_uint16_t nDaa, IFX_TAPI_FXO_HOOK_t);
++   IFX_return_t (*hookGet) (IFX_uint16_t nDaa, IFX_TAPI_FXO_HOOK_t *);
++   IFX_return_t (*batGet)  (IFX_uint16_t nDaa, IFX_enDis_t *);
++   IFX_return_t (*apohGet) (IFX_uint16_t nDaa, IFX_enDis_t *);
++   IFX_return_t (*polGet)  (IFX_uint16_t nDaa, IFX_enDis_t *);
++   IFX_return_t (*init)    (IFX_uint16_t nDaa);
+ } DAA_FUNCTION_MAP_t;
+ 
+ 
+diff -ruiN daa_pure/src/drv_daa_common_priv.h daa/src/drv_daa_common_priv.h
+--- daa_pure/src/drv_daa_common_priv.h	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_common_priv.h	2009-04-21 16:19:43.000000000 +0700
+@@ -36,6 +36,15 @@
+ 
+ #define DRV_DAA_DEBOUNCE_TIME       70 /* ms */
+ 
++#if HZ != 1000
++#error "HZ should be set to 1000 for proper ring detection"
++#endif
++
++#define DRV_DAA_MIN_RING_TIME       7 /* ms */
++#define DRV_DAA_MAX_RING_TIME      36 /* ms */
++#define DRV_DAA_RING_TEST_MAX_DIFFER 3 /* ms */
++
++
+ IFX_void_t daa_tcb_ring (IFX_void_t * timer_id, IFX_uint32_t arg);
+ IFX_void_t daa_tcb_bat  (IFX_void_t * timer_id, IFX_uint32_t arg);
+ IFX_void_t daa_tcb_apoh (IFX_void_t * timer_id, IFX_uint32_t arg);
+diff -ruiN daa_pure/src/drv_daa_common_sm_ring.c daa/src/drv_daa_common_sm_ring.c
+--- daa_pure/src/drv_daa_common_sm_ring.c	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_common_sm_ring.c	2009-04-21 16:20:11.000000000 +0700
+@@ -26,13 +26,23 @@
+ 
+ /*   Description : common ring state machine */
+ 
+-
+ #include "drv_daa.h"
+ #include "drv_daa_api.h"
+ #include "drv_daa_common_priv.h"
+ #include "drv_daa_common.h"
+ #include "drv_daa_boards.h"
+ 
++struct full_int_stat_s {
++	int is_prev_ok;
++	unsigned int i_tag;
++	unsigned int imp[4];
++	unsigned int fail_num;
++};
++static volatile struct full_int_stat_s sts[DRV_DAA_MAX_DAA_CHANNELS];
++static volatile unsigned int 
++			j_prev[DRV_DAA_MAX_DAA_CHANNELS],
++			j_cur[DRV_DAA_MAX_DAA_CHANNELS];
++
+ static IFX_void_t daa_sh_ring_notRinging (DAA_DEV_t *pDaa, DAA_RING_EVT_t evt);
+ static IFX_void_t daa_sh_ring_Ringing (DAA_DEV_t *pDaa, DAA_RING_EVT_t evt);
+ 
+@@ -63,6 +73,7 @@
+ {
+    IFX_TAPI_EVENT_t tapi_evt;
+    IFX_boolean_t ret;
++   unsigned int daa_idx = pDaa->nDaa;
+ 
+    switch (evt)
+    {
+@@ -73,6 +84,12 @@
+       case DAA_RING_EVT_RING_IRQ:
+          if (pDaa->nRingCnt == 0)
+          {
++			 /* set the first bound */
++			j_prev[daa_idx] = jiffies;
++
++			/* set test vars */
++			memset((void*)&sts[daa_idx], 0, sizeof(sts[daa_idx]));
++
+             /* start ring timer */
+             ret = TAPI_SetTime_Timer(pDaa->tid_ring, DRV_DAA_DEBOUNCE_TIME,
+                                      IFX_FALSE, IFX_FALSE);
+@@ -81,9 +98,27 @@
+                TRACE(DAA_DRV, DBG_LEVEL_HIGH,
+                     ("ERR drv_daa failed to start ring timer\n\r"));
+             }
++			 /* increase ring counter */
++			 pDaa->nRingCnt++;
+          }
+          else
+          {
++			 unsigned int j_diff;
++			 int ds;
++			 volatile unsigned int * ims = sts[daa_idx].imp;
++			 volatile unsigned int * tagp = &sts[daa_idx].i_tag;
++
++			 /* set the bound and compare with previous */
++		   	j_cur[daa_idx] = jiffies;
++			j_diff = j_cur[daa_idx] - j_prev[daa_idx];
++			j_prev[daa_idx] = j_cur[daa_idx];
++
++			if(	j_diff < DRV_DAA_MIN_RING_TIME ||
++				j_diff > DRV_DAA_MAX_RING_TIME){
++				/* Bad ring - do not count it */
++				break;
++			}
++
+             /* restart ring timer */
+             ret = TAPI_SetTime_Timer(pDaa->tid_ring, DRV_DAA_DEBOUNCE_TIME,
+                                      IFX_FALSE, IFX_TRUE);
+@@ -92,19 +127,32 @@
+                TRACE(DAA_DRV, DBG_LEVEL_HIGH,
+                     ("ERR drv_daa failed to restart ring timer\n\r"));
+             }
++
+             /* filter wrong ring irqs */
+-            if (pDaa->nRingCnt >= 2)
+-            {
+-               /* report RING_START */
+-               tapi_evt.id = IFX_TAPI_EVENT_FXO_RING_START;
+-               IFX_TAPI_FXO_Event_Dispatch(pDaa->nDaa, &tapi_evt);
+-               pDaa->state_ring = DAA_RING_STATE_RINGING;
+-               TRACE(DAA_DRV, DBG_LEVEL_LOW,
+-                    ("DAA ring STAT notRinging EVT rIrqt ==> RingStart\n\r"));
+-            }
++			ims[*tagp] = j_diff;
++			ds = (int)ims[((*tagp)+1)%4] + (int)ims[((*tagp)+2)%4] - /*s1*/
++				 (int)ims[((*tagp)+3)%4] - (int)ims[((*tagp)+4)%4];  /*s2*/
++			ds = (ds < 0)? (0-ds): ds;
++
++			if(ds <= DRV_DAA_RING_TEST_MAX_DIFFER){
++				if(sts[daa_idx].is_prev_ok){
++					/* up the ring */
++				   tapi_evt.id = IFX_TAPI_EVENT_FXO_RING_START;
++				   IFX_TAPI_FXO_Event_Dispatch(pDaa->nDaa, &tapi_evt);
++				   pDaa->state_ring = DAA_RING_STATE_RINGING;
++				   TRACE(DAA_DRV, DBG_LEVEL_LOW,
++					("DAA ring STAT notRinging EVT rIrqt ==> RingStart\n\r"));
++				} else {
++					sts[daa_idx].is_prev_ok = 1;
++				}
++			} else {
++				sts[daa_idx].is_prev_ok = 0;
++			}
++			*tagp = ((*tagp)+1)%4;
++
++			 /* increase ring counter */
++			 pDaa->nRingCnt++;
+          }
+-         /* increase ring counter */
+-         pDaa->nRingCnt++;
+          break;
+    }
+ }
+@@ -132,7 +180,23 @@
+          TRACE(DAA_DRV, DBG_LEVEL_LOW,
+               ("DAA ring STAT Ringing EVT timeout ==> RingStop\n\r"));
+          break;
+-      case DAA_RING_EVT_RING_IRQ:
++      case DAA_RING_EVT_RING_IRQ:{
++			 unsigned int daa_idx = pDaa->nDaa;
++			 unsigned int j_diff;
++			 int ds;
++			 volatile unsigned int * ims = sts[daa_idx].imp;
++			 volatile unsigned int * tagp = &sts[daa_idx].i_tag;
++			 /* set the bound and compare with previous */
++		   	j_cur[daa_idx] = jiffies;
++			j_diff = j_cur[daa_idx] - j_prev[daa_idx];
++			j_prev[daa_idx] = j_cur[daa_idx];
++
++			if(	j_diff < DRV_DAA_MIN_RING_TIME ||
++				j_diff > DRV_DAA_MAX_RING_TIME){
++				/* Bad ring - do not count it */
++				break;
++			}
++
+          /* restart ring timer */
+          ret = TAPI_SetTime_Timer(pDaa->tid_ring, DRV_DAA_DEBOUNCE_TIME,
+                                   IFX_FALSE, IFX_TRUE);
+@@ -141,7 +205,30 @@
+             TRACE(DAA_DRV, DBG_LEVEL_HIGH,
+                  ("ERR drv_daa failed to restart ring timer\n\r"));
+          }
++
++		/* there we can drop ring by length sum difference mismatch */
++		ims[*tagp] = j_diff;
++		ds = (int)ims[((*tagp)+1)%4] + (int)ims[((*tagp)+2)%4] - /*s1*/
++			 (int)ims[((*tagp)+3)%4] - (int)ims[((*tagp)+4)%4];  /*s2*/
++		ds = (ds < 0)? (0-ds): ds;
++
++		if(ds <= DRV_DAA_RING_TEST_MAX_DIFFER){
++			sts[daa_idx].is_prev_ok = 1;
++		} else {
++			if( !sts[daa_idx].is_prev_ok){
++				/* drop the ring */
++				 tapi_evt.id = IFX_TAPI_EVENT_FXO_RING_STOP;
++				 IFX_TAPI_FXO_Event_Dispatch(pDaa->nDaa, &tapi_evt);
++				 pDaa->state_ring = DAA_RING_STATE_NOT_RINGING;
++				 pDaa->nRingCnt = 0;
++				 TRACE(DAA_DRV, DBG_LEVEL_LOW,
++					  ("DAA ring STAT Ringing EVT timeout ==> RingStop\n\r"));
++			}
++			sts[daa_idx].is_prev_ok = 0;
++		}
++		*tagp = ((*tagp)+1)%4;
+          break;
++ 	  }
+    }
+ }
+ 
+diff -ruiN daa_pure/src/drv_daa_linux.c daa/src/drv_daa_linux.c
+--- daa_pure/src/drv_daa_linux.c	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_linux.c	2009-04-21 16:19:43.000000000 +0700
+@@ -37,10 +37,10 @@
+ /* ============================= */
+ 
+ static IFX_int8_t                debug_level       = DBG_LEVEL_HIGH;
+-
++/*
+ MODULE_PARM(debug_level, "b");
+ MODULE_PARM_DESC(debug_level, "set to get more (1) or fewer (4) debug outputs");
+-
++*/
+ 
+ #if CONFIG_PROC_FS
+ /**
+@@ -208,4 +208,6 @@
+ MODULE_DESCRIPTION("IFX TAPI DAA abstraction module");
+ MODULE_SUPPORTED_DEVICE("IFX supported DAAs");
+ 
++MODULE_LICENSE("GPL");
++
+ #endif /* LINUX */
+diff -ruiN daa_pure/src/drv_daa_linux.h daa/src/drv_daa_linux.h
+--- daa_pure/src/drv_daa_linux.h	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/drv_daa_linux.h	2009-04-21 16:19:43.000000000 +0700
+@@ -47,6 +47,7 @@
+ #endif
+ 
+ /*several includes*/
++#include <linux/version.h>
+ #include <linux/fs.h>
+ #include <linux/errno.h>
+ /*proc-file system*/
+diff -ruiN daa_pure/src/Makefile.am daa/src/Makefile.am
+--- daa_pure/src/Makefile.am	2009-04-21 16:19:43.000000000 +0700
++++ daa/src/Makefile.am	2009-04-21 16:19:43.000000000 +0700
+@@ -21,18 +21,15 @@
+ # DEALINGS IN THE SOFTWARE.
+ 
+ 
+-bin_PROGRAMS = drv_daa
+-drv_daa_SOURCES= \
++bin_PROGRAMS = drv_daa.ko
++drv_daa_ko_SOURCES= \
+       drv_daa_api.c \
+       drv_daa_common.c \
+       drv_daa_common_sm_ring.c \
+       drv_daa_common_sm_apoh.c \
+       drv_daa_common_sm_pol.c \
+       drv_daa_common_sm_bat.c \
+-      drv_daa_board_template.c \
+-      drv_daa_board_easy3332.c \
+-      drv_daa_board_easy50712.c \
+-      drv_daa_board_easy3201.c \
++      drv_daa_board_sg.c \
+       drv_daa_linux.c
+ 
+ 
+@@ -43,15 +40,13 @@
+       drv_daa_linux.h \
+       drv_daa_common.h \
+       drv_daa_common_priv.h \
+-      drv_daa_board_template.h \
+-      drv_daa_board_easy3332.h \
+-      drv_daa_board_easy50712.h \
+-      drv_daa_board_easy3201.h
++      drv_daa_board_sg.h
+ 
+ 
+-drv_daa_LDFLAGS = -r -nostdlib
+-drv_daa_CFLAGS  = -D@BOARD_NAME@ -D__KERNEL__ \
++drv_daa_ko_LDFLAGS = -r -nostdlib
++drv_daa_ko_CFLAGS  = -D@BOARD_NAME@ -D__KERNEL__ \
+                   -DLINUX -DMODULE -DMODVERSIONS -DEXPORT_SYMTAB \
++                  -DLINUX_2_6 -fno-common \
+ 				  -Wall -Wstrict-prototypes -Wno-trigraphs -Wimplicit \
+ 				  -Wreturn-type -Wunused -Wswitch -Wcomment -Wparentheses \
+ 				  $(AM_CFLAGS)
+@@ -59,6 +54,7 @@
+ INCLUDES = -I@srcdir@ \
+            -I@top_srcdir@ \
+            -I@KERNEL_INCL_PATH@ \
++           -I@KERNEL_INCL_PATH@/asm/mach-generic \
+            -I@TAPI_INCL_PATH@ -I@TAPI_INCL_PATH@/../src \
+            -I@TAPI_INCL_PATH@/../src/common/src \
+            -I@DUSLIC_INCL_PATH@ -I@DUSLIC_INCL_PATH@/../src \
+@@ -76,3 +72,19 @@
+ 		echo "  $(STRIP) --strip-debug $(DESTDIR)$(bindir)/$$p"; \
+ 	done
+ 
++# Extra rule for linux-2.6 kernel object
++drv_daa_ko_OBJS = "$(subst .c,.o, $(drv_daa_ko_SOURCES))"
++
++drv_daa.ko:
++	@echo -e "Making Linux 2.6.x kernel object"
++	@echo -e "# drv_daa: Generated to build Linux 2.6.x kernel object" > $(PWD)/Kbuild
++	@echo -e "obj-m := $(subst .ko,.o,$@)"			>> $(PWD)/Kbuild
++	@echo -e "$(subst .ko,,$@)-y := $(drv_daa_ko_OBJS)"	>> $(PWD)/Kbuild
++	@echo -e "EXTRA_CFLAGS := -DHAVE_CONFIG_H  $(CFLAGS) $(drv_daa_ko_CFLAGS) $(INCLUDES) -I$(PWD)/.."	>> $(PWD)/Kbuild
++	$(MAKE) ARCH=mips -C @KERNEL_INCL_PATH@/.. O=@KERNEL_INCL_PATH@/.. M=$(PWD) modules
++
++clean-generic:
++	@echo "drv_daa: Cleanup Linux 2.6.x kernel object build"
++	@- find . -name ".*.cmd" | xargs rm -f
++	@- rm -f Module.symvers Kbuild
++	@- rm -rf .tmp_versions drv_daa.mod.c

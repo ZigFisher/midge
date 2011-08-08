@@ -1,0 +1,56 @@
+#!/bin/sh
+
+start()
+{
+	enabled="`kdb get svc_dns_enabled`"
+	if [ "x${enabled}" = "x1" ]; then
+		[ -n "`pidof named`" ] && stop
+		echo "Updating DNS server configs."
+		/etc/templates/Update dns_server
+		echo "Starting DNS server: bind"
+		mkdir -p /var/root-dns/
+		chown -R named:named /var/root-dns/*
+		touch /var/run/named.pid
+		chown named:named /var/run/named.pid
+#		named -u named -t /var/root-dns/ -c /etc/bind/named.conf
+		chmod a+w /var/run
+		/usr/sbin/named -u named -c /etc/bind/named.conf
+	else
+		echo "Do not starting DNS server"
+	fi	
+}
+
+stop()
+{
+	echo "Stopping DNS server: bind"
+	if [ -f /var/run/named.pid ]; then
+		kill `cat /var/run/named.pid`
+		usleep 50000
+		[ -n "`pidof named`" ] && kill `pidof named`
+		usleep 50000
+		[ -n "`pidof named`" ] && kill -9 `pidof named`
+		return 0
+	fi
+
+	if [ -f /var/root-dns/var/run/named.pid ]; then
+		kill `cat /var/root-dns/var/run/named.pid`
+		return 0
+	fi
+	[ -n "`pidof named`" ] && kill `pidof named`
+
+}		
+	
+
+case $1 in
+	start)
+		start
+		;;
+	stop) 
+		stop
+		;;
+	restart)
+		stop
+		start	
+		;;
+esac
+

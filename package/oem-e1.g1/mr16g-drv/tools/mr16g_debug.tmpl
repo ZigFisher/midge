@@ -1,0 +1,64 @@
+#!/bin/sh
+# Sigrand MR16G debug tool 
+# for Linux kernel v 2.6
+#
+#	Written 2007 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+
+MANUFACTURER=@MANUFACTURER@
+MODNAME=@MODNAME@
+TOOLNAME=@TOOLNAME@
+DRVNAME=@DRVNAME@
+
+
+#---------------------------------------------------------
+
+print_usage()
+{
+    echo "$MANUFACTURER $DRVNAME IO window debug tool"
+    echo "Usage:"
+    echo "  $TOOLNAME <if> s <addr> <val>     - set register <addr> to <val>"
+    echo "  $TOOLNAME <if> r <addr> <count>   - read <count> bytes starting from <addr>"    
+}
+
+
+#---------------------------------------------------------
+
+# Check that interface name specifyed
+if [ $# -lt "4" ]; then
+    print_usage
+    exit
+fi
+
+cdir=`pwd`
+iface=$1
+
+CFG_PATH="/sys/class/net/${iface}/hw_private"
+if [ -d "$CFG_PATH" ]; then
+	cd "$CFG_PATH"
+else
+	echo "$0: No such device $1"
+	exit
+fi
+
+if [ ! -f "winwrite" ]; then
+	echo "Sysfs debug is off in this driver"
+	exit
+fi
+
+
+case $2 in
+    "s")
+	echo "$3 $4" > winwrite
+	cat winwrite
+	echo
+	;;
+    "r")
+	echo "$3 $4" > winread
+	cat winread
+	;;
+    *)
+	echo "Bad parameters!"
+esac

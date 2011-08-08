@@ -1,0 +1,4197 @@
+--- linux-2.4.32/drivers/usb/host/usb-shci.c.orig	2006-10-26 16:11:18.000000000 +0300
++++ linux-2.4.32/drivers/usb/host/usb-shci.c	2006-10-26 16:13:08.000000000 +0300
+@@ -17,6 +17,7 @@
+  * v1.0 2003/09/09 initial release
+  * V1.1 2003/09/16 Fix Storage Problem, fix bulk out performance issue.
+  * v1.2 2005/11/09 many fixes
++ * v1.3 2006/04/09 fixed some mass storage problems for 2.4.32
+  */
+ 
+ #include <linux/config.h>
+@@ -33,6 +34,7 @@
+ #include <linux/timer.h>
+ #include <linux/list.h>
+ #include <linux/interrupt.h>  /* for in_interrupt() */
++//#define DEBUG
+ #undef DEBUG
+ #include <linux/usb.h>
+ 
+@@ -41,76 +43,36 @@
+ #include <asm/system.h>
+ #include <asm/unaligned.h>
+ 
+-#define OHCI_USE_NPS		// force NoPowerSwitching mode
+-#ifdef CONFIG_AHCI_DEBUG
+-#define AHCI_VERBOSE_DEBUG	/* not always helpful */
+-#endif
++//#include <asm/adm5120/adm5120.h>	//Uncomment for Amilda
++#include <asm/am5120/adm5120.h>		//Uncomment for Midge/EdiLinux
+ 
+ #include "usb-shci.h"
+ 
++#include "../hcd.h"
+ 
+-#ifdef CONFIG_PMAC_PBOOK
+-#include <asm/machdep.h>
+-#include <asm/pmac_feature.h>
+-#include <asm/pci-bridge.h>
+-#ifndef CONFIG_PM
+-#define CONFIG_PM
+-#endif
+-#endif
+-
++static char hcd_name[] = "adm5120-hcd";
+ 
+ /*
+  * Version Information
+  */
+-#define DRIVER_VERSION "v1.2"
+-#define DRIVER_AUTHOR "Junius Chen<juniusc@admtek.com.tw>,Roman Weissgaerber,David Brownell,Sergey Mudry"
++#define DRIVER_VERSION "v1.3"
++#define DRIVER_AUTHOR "Junius Chen<juniusc@admtek.com.tw>,Roman Weissgaerber,David Brownell,Sergey Mudry,Marcel Groothuis"
+ #define DRIVER_DESC "USB AHCI Host Controller Driver"
+ 
+-/* For initializing controller (mask in an HCFS mode too) */
+-#define	OHCI_CONTROL_INIT \
+-	(OHCI_CTRL_CBSR & 0x3) | OHCI_CTRL_IE | OHCI_CTRL_PLE
+-
+ #define OHCI_UNLINK_TIMEOUT	(HZ / 10)
+ 
+ static LIST_HEAD (ohci_hcd_list);
+ static spinlock_t usb_ed_lock = SPIN_LOCK_UNLOCKED;
+ 
+-#define ReadDw(addr)		((*(volatile unsigned int *)(addr)))
++#define ReadDw(addr)    ((*(volatile unsigned int *)(addr)))
+ #define WriteDw(b,addr) ((*(volatile unsigned int *)(addr)) = (b)) 
+ 
+ /*-------------------------------------------------------------------------*/
+ 
+-/* AMD-756 (D2 rev) reports corrupt register contents in some cases.
+- * The erratum (#4) description is incorrect.  AMD's workaround waits
+- * till some bits (mostly reserved) are clear; ok for all revs.
+- */
+-/*
+-#define read_roothub(hc, register, mask) ({ \
+-	u32 temp = readl (&hc->regs->roothub.register); \
+-	if (hc->flags & OHCI_QUIRK_AMD756) \
+-		while (temp & mask) \
+-			temp = readl (&hc->regs->roothub.register); \
+-	temp; })
+-*/
+-
+-extern void usb_release_bandwidth (struct usb_device *dev, struct urb *urb , 
+-	    int isoc);
+-extern int usb_check_bandwidth (struct usb_device *dev, struct urb * urb);
+-extern void usb_claim_bandwidth (struct usb_device *dev, struct urb *urb,
+-		int bustime, int isoc);
+-		
+-///extern void dl_del_list (ohci_t * ohci, unsigned int frame);
+-
+ static inline u32 roothub_status (struct ohci *hc)
+-{ 
+-	return ReadDw (&hc->regs->rhdescriptor); 
+-}
+-
++	{ return ReadDw (&hc->regs->rhdescriptor); }
+ static u32 roothub_portstatus (struct ohci *hc, int i)
+-{
+-	return ReadDw (&hc->regs->portstatus[i]);
+-}	
+-
++	{ return ReadDw (&hc->regs->portstatus[i]); }
+ 
+ 
+ /*-------------------------------------------------------------------------*
+@@ -119,55 +81,58 @@
+  
+ /* free HCD-private data associated with this URB */
+ 
+-static void urb_free_priv_ahci (struct ohci *hc, struct urb * urb)
++static void urb_free_priv_ahci (struct ohci *hc, urb_priv_t * urb_priv)
+ {
+-	urb_priv_t * 	urb_priv = urb->hcpriv;
+ 	int		last = urb_priv->length - 1;
+ 	int		len;
+ 	int		dir;
+-///	struct td	*td;
++	struct td	*td;
+ 
++	DPRINTF("urb_free_priv_ahci\n");
+ 	if (last >= 0) {
+ 
+ 		/* ISOC, BULK, INTR data buffer starts at td 0 
+ 		 * CTRL setup starts at td 0 */
+-///		td = (struct td *)urb_priv->ed->TD_Addr [0];
++		td = (struct td*) urb_priv->ed->TD_Addr[0];
+ 
+-		len = urb->transfer_buffer_length,
+-		dir = usb_pipeout (urb->pipe) ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE;
++		len = td->urb->transfer_buffer_length,
++		dir = usb_pipeout (td->urb->pipe)
++					? PCI_DMA_TODEVICE
++					: PCI_DMA_FROMDEVICE;
+ 
+ 		/* unmap CTRL URB setup */
+-		if (usb_pipecontrol (urb->pipe)) {
+-			pci_unmap_single (hc->ohci_dev, urb_priv->dma2, 8, PCI_DMA_TODEVICE);
++		if (usb_pipecontrol (td->urb->pipe))
++		{
++			pci_unmap_single (hc->ohci_dev, 
++					td->data_dma, 8, PCI_DMA_TODEVICE);
++			
+ 			/* CTRL data buffer starts at td 1 if len > 0 */
+-///			if (len && last > 0)
+-///				td = (struct td *) urb_priv->ed->TD_Addr [1]; 		
++			if (len && last > 0)
++				td = (struct td*) urb_priv->ed->TD_Addr[1];
+ 		}
+-
++		
+ 		/* unmap data buffer */
+-		if (len && urb_priv->dma1)
+-			pci_unmap_single (hc->ohci_dev, urb_priv->dma1, len, dir);
+-
++		if (len && td->data_dma)
++			pci_unmap_single (hc->ohci_dev, td->data_dma, len, dir);
+ 	}
+-#ifdef AHCI_VERBOSE_DEBUG	
+-	printk("Free URB Priv %p\n",urb_priv);
+-#endif	
++	DPRINTF("Free URB Priv %p\n",urb_priv);
+ 	kfree (urb_priv);
+ }
+  
+ static void urb_rm_priv_locked_ahci (struct urb * urb) 
+ {
+ 	urb_priv_t * urb_priv = urb->hcpriv;
+-
++	
++	DPRINTF("urb_rm_priv_locked_ahci\n");
++	
+ 	if (urb_priv) {
+-
+ #ifdef	DO_TIMEOUTS
+ 		if (urb->timeout) {
+ 			list_del (&urb->urb_list);
+ 			urb->timeout -= jiffies;
+ 		}
+ #endif
+-
++		
+ 		/* Release int/iso bandwidth */
+ 		if (urb->bandwidth) {
+ 			switch (usb_pipetype(urb->pipe)) {
+@@ -181,14 +146,216 @@
+ 				break;
+ 			}
+ 		}
+-
+-		urb_free_priv_ahci ((struct ohci *)urb->dev->bus->hcpriv, urb);
++		
++		urb_free_priv_ahci ((struct ohci *)urb->dev->bus->hcpriv, urb_priv);
+ 		urb->hcpriv = NULL;
+ 		usb_dec_dev_use (urb->dev);
+-		urb->dev = NULL;
++	} else {
++		if (urb->dev != NULL) {
++			err ("Non-null dev at rm_priv time");
++			// urb->dev = NULL;
++		}
++	}
++}
++
++/*-------------------------------------------------------------------------*/
++ 
++#ifdef DEBUG
++static int sahci_get_current_frame_number (struct usb_device * dev);
++
++/* debug| print the main components of an URB
++ * small: 0) header + data packets 1) just header */
++ 
++static void urb_print (struct urb * urb, char * str, int small)
++{
++	unsigned int pipe= urb->pipe;
++	
++	if (!urb->dev || !urb->dev->bus) {
++		dbg("%s URB: no dev", str);
++		return;
++	}
++	
++#ifndef	OHCI_VERBOSE_DEBUG
++	if (urb->status != 0)
++#endif
++	dbg("%s URB:[%4x] dev:%2d,ep:%2d-%c,type:%s,flags:%4x,len:%d/%d,stat:%d(%x)", 
++		 str,
++		 sahci_get_current_frame_number (urb->dev), 
++		 usb_pipedevice (pipe),
++		 usb_pipeendpoint (pipe), 
++		 usb_pipeout (pipe)? 'O': 'I',
++		 usb_pipetype (pipe) < 2? (usb_pipeint (pipe)? "INTR": "ISOC"):
++		 	(usb_pipecontrol (pipe)? "CTRL": "BULK"),
++		 urb->transfer_flags, 
++		 urb->actual_length, 
++		 urb->transfer_buffer_length,
++		 urb->status, urb->status);
++#ifdef	OHCI_VERBOSE_DEBUG
++	if (!small) {
++		int i, len;
++		
++		if (usb_pipecontrol (pipe)) {
++			printk (KERN_DEBUG __FILE__ ": cmd(8):");
++			for (i = 0; i < 8 ; i++) 
++				printk (" %02x", ((__u8 *) urb->setup_packet) [i]);
++			printk ("\n");
++		}
++		if (urb->transfer_buffer_length > 0 && urb->transfer_buffer) {
++			printk (KERN_DEBUG __FILE__ ": data(%d/%d):", 
++				urb->actual_length, 
++				urb->transfer_buffer_length);
++			len = usb_pipeout (pipe)? 
++						urb->transfer_buffer_length: urb->actual_length;
++			for (i = 0; i < 16 && i < len; i++) 
++				printk (" %02x", ((__u8 *) urb->transfer_buffer) [i]);
++			printk ("%s stat:%d\n", i < len? "...": "", urb->status);
++		}
++	} 
++#endif
++}
++
++/* just for debugging; prints non-empty branches of the int ed tree inclusive iso eds*/
++void ep_print_int_eds (ohci_t * ohci, char * str)
++{
++	//TODO add something useful
++	
++}
++
++
++static void ohci_dump_intr_mask (char *label, __u32 mask)
++{	
++	dbg("%s: 0x%08x%s%s%s%s%s%s%s%s%s%s",
++		label,
++		mask,
++		(mask & OHCI_INT_ACT) ? " INTA" : "",
++		(mask & OHCI_FATAL_INT) ? " FATI" : "",
++		(mask & OHCI_SW_INT) ? " SWI" : "",
++		(mask & OHCI_TD_INT) ? " TDC" : "",
++		(mask & OHCI_FNO_INT) ? " FNO" : "",
++		(mask & OHCI_SO_INT) ? " SO" : "",
++		(mask & OHCI_INSMOV_INT) ? " RHSC" : "",
++		(mask & OHCI_BAB_INT) ? " BABI" : "",
++		(mask & OHCI_RES_INT) ? " RESI" : "",
++		(mask & OHCI_SOF_INT) ? " SOFI" : ""
++		);
++}
++
++static void maybe_print_eds (char *label, __u32 value)
++{
++	if (value)
++		dbg ("%s %08x", label, value);
++}
++
++static char *hcfs2string (int state)
++{
++	switch (state) {
++		case OHCI_USB_RESET:	return "reset";
++		case OHCI_USB_RESUME:	return "resume";
++		case OHCI_USB_OPER:	return "operational";
++		case OHCI_USB_SUSPEND:	return "suspend";
+ 	}
++	return "?";
++}
++
++// dump control and status registers
++static void ohci_dump_status (ohci_t *controller)
++{
++	struct ohci_regs	*regs = controller->regs;
++	__u32			temp;
++	
++	temp = ReadDw (&regs->control);
++	dbg ("control: 0x%08x GC=%s%s%s%s", temp,
++		(temp & OHCI_CTRL_SR) ? " SR" : "",
++		(temp & OHCI_CTRL_DMAA) ? " DMAA" : "",
++		(temp & OHCI_CTRL_SIR) ? " SIR" : "",
++		(temp & OHCI_CTRL_UHFE) ? " UHFE" : "");
++	ohci_dump_intr_mask ("intrstatus", ReadDw (&regs->intrstatus));
++	ohci_dump_intr_mask ("intrenable", ReadDw (&regs->intrenable));
++	
++//	maybe_print_eds ("ed_periodcurrent", readl (&regs->ed_periodcurrent));
++
++//	maybe_print_eds ("ed_controlhead", readl (&regs->ed_controlhead));
++//	maybe_print_eds ("ed_controlcurrent", readl (&regs->ed_controlcurrent));
++
++//	maybe_print_eds ("ed_bulkhead", readl (&regs->ed_bulkhead));
++//	maybe_print_eds ("ed_bulkcurrent", readl (&regs->ed_bulkcurrent));
++
++//	maybe_print_eds ("donehead", readl (&regs->donehead));
++}
++
++static void ohci_dump_roothub (ohci_t *controller, int verbose)
++{
++	__u32	temp, ndp;
++	//__u32 i;
++
++	temp = roothub_status (controller);
++	if (temp == ~(u32)0)
++		return;
++	ndp = (temp & RH_NDP);
++
++	if (verbose) {
++		//MG: todo: rewrite to ADM5120 usb
++//		dbg ("roothub: %08x POTPGT=%d%s%s%s%s%s NDP=%d", temp,
++//			((temp & RH_A_POTPGT) >> 24) & 0xff,
++//			(temp & RH_A_NOCP) ? " NOCP" : "",
++//			(temp & RH_A_OCPM) ? " OCPM" : "",
++//			(temp & RH_A_DT) ? " DT" : "",
++//			(temp & RH_A_NPS) ? " NPS" : "",
++//			(temp & RH_A_PSM) ? " PSM" : "",
++//			ndp
++//			);
++		
++//		temp = roothub_status (controller);
++//		dbg ("roothub.status: %08x%s%s%s%s%s%s",
++//			temp,
++//			(temp & RH_HS_CRWE) ? " CRWE" : "",
++//			(temp & RH_HS_OCIC) ? " OCIC" : "",
++//			(temp & RH_HS_LPSC) ? " LPSC" : "",
++//			(temp & RH_HS_DRWE) ? " DRWE" : "",
++//			(temp & RH_HS_OCI) ? " OCI" : "",
++//			(temp & RH_HS_LPS) ? " LPS" : ""
++//			);
++	}
++	
++//	for (i = 0; i < ndp; i++) {
++//		temp = roothub_portstatus (controller, i);
++//		dbg ("roothub.portstatus [%d] = 0x%08x%s%s%s%s%s%s%s%s%s%s%s%s",
++//			i,
++//			temp,
++//			(temp & RH_PS_PRSC) ? " PRSC" : "",
++//			(temp & RH_PS_OCIC) ? " OCIC" : "",
++//			(temp & RH_PS_PSSC) ? " PSSC" : "",
++//			(temp & RH_PS_PESC) ? " PESC" : "",
++//			(temp & RH_PS_CSC) ? " CSC" : "",
++//
++//			(temp & RH_PS_LSDA) ? " LSDA" : "",
++//			(temp & RH_PS_PPS) ? " PPS" : "",
++//			(temp & RH_PS_PRS) ? " PRS" : "",
++//			(temp & RH_PS_POCI) ? " POCI" : "",
++//			(temp & RH_PS_PSS) ? " PSS" : "",
++//
++//			(temp & RH_PS_PES) ? " PES" : "",
++//			(temp & RH_PS_CCS) ? " CCS" : ""
++//			);
++//	}
++}
++
++static void ohci_dump (ohci_t *controller, int verbose)
++{
++	dbg ("OHCI controller usb-%s state", hcd_name);
++
++	// dumps some of the state we know about
++	//ohci_dump_status (controller);
++	//if (verbose)
++	//	ep_print_int_eds (controller, "hcca");
++	//dbg ("hcca frame #%04x", controller->hcca->frame_no);
++	//ohci_dump_roothub (controller, 1);
+ }
+ 
++
++#endif
++
++
+ static void urb_rm_priv_ahci (struct urb * urb)
+ {
+ 	unsigned long flags;
+@@ -198,8 +365,6 @@
+ 	spin_unlock_irqrestore (&usb_ed_lock, flags);
+ }
+ 
+-/*-------------------------------------------------------------------------*/
+- 
+ 
+ /*-------------------------------------------------------------------------*
+  * Interface functions (URB)
+@@ -213,7 +378,9 @@
+ 	struct urb * urbt;
+ 	unsigned long flags;
+ 	int i;
+-///	td_t	*td_tp;
++	td_t	*td_tp;
++	
++	DPRINTF("sahci_return_urb\n");
+ 	
+ 	if (!urb_priv)
+ 		return -1; /* urb already unlinked */
+@@ -224,36 +391,41 @@
+ 		return -1;
+ 	}
+ 	
+-#ifdef AHCI_VERBOSE_DEBUG
+-        printk("URB RET [%p]\n",urb);
+-#endif
+-
++	DPRINTF("URB RET [%p]\n",urb);
++	
+ 	switch (usb_pipetype (urb->pipe)) {
+-  		case PIPE_INTERRUPT:
+-///  			td_tp = (struct td *) urb_priv->ed->TD_Addr[0];
++		case PIPE_INTERRUPT:
++			td_tp = (struct td *) urb_priv->ed->TD_Addr[0];
+ 			pci_unmap_single (hc->ohci_dev,
+-				urb_priv->dma1,
++				td_tp->data_dma,
+ 				urb->transfer_buffer_length,
+ 				usb_pipeout (urb->pipe)
+ 					? PCI_DMA_TODEVICE
+ 					: PCI_DMA_FROMDEVICE);
+-
+-			urb->complete (urb);
+-
+-			/* implicitly requeued */
+-  			urb->actual_length = 0;
+-///  			urb->status = USB_ST_URB_PENDING;
+-  			if (urb_priv->state != URB_DEL)
+-				td_submit_urb_ahci (urb);
+-
+-  			break;
+-  			
++			
++			if (urb->interval)
++			{
++				urb->complete (urb);
++				
++				/* implicitly requeued */
++				urb->actual_length = 0;
++				urb->status = USB_ST_URB_PENDING;
++				if (urb_priv->state != URB_DEL)
++					td_submit_urb_ahci (urb);
++			} else {
++				urb_rm_priv_ahci (urb);
++				urb->complete (urb);
++			}
++			break;
++			
+ 		case PIPE_ISOCHRONOUS:
++			DPRINTF("sahci_return_urb: PIPE_ISOCHRONOUS\n");
+ 			for (urbt = urb->next; urbt && (urbt != urb); urbt = urbt->next);
+-			
+-			if (urbt) { /* send the reply and requeue URB */
++			td_tp = (struct td *) urb_priv->ed->TD_Addr[0];
++			if (urbt) { // send the reply and requeue URB
+ 				pci_unmap_single (hc->ohci_dev,
+-					urb_priv->dma1,
++					td_tp->data_dma,
++//					urb_priv->td [0]->data_dma,
+ 					urb->transfer_buffer_length,
+ 					usb_pipeout (urb->pipe)
+ 						? PCI_DMA_TODEVICE
+@@ -261,23 +433,22 @@
+ 				urb->complete (urb);
+ 				spin_lock_irqsave (&usb_ed_lock, flags);
+ 				urb->actual_length = 0;
+-  				urb->status = USB_ST_URB_PENDING;
+-  				urb->start_frame = urb_priv->ed->last_iso + 1;
+-  				if (urb_priv->state != URB_DEL) {
+-  					for (i = 0; i < urb->number_of_packets; i++) {
+-  						urb->iso_frame_desc[i].actual_length = 0;
+-  						urb->iso_frame_desc[i].status = -EXDEV;
+-  					}
+-  					td_submit_urb_ahci (urb);
+-  				}
+-  				spin_unlock_irqrestore (&usb_ed_lock, flags);
+-  				
+-  			} else { /* unlink URB, call complete */
++				urb->status = USB_ST_URB_PENDING;
++				urb->start_frame = urb_priv->ed->last_iso + 1;
++				if (urb_priv->state != URB_DEL) {
++					for (i = 0; i < urb->number_of_packets; i++) {
++						urb->iso_frame_desc[i].actual_length = 0;
++						urb->iso_frame_desc[i].status = -EXDEV;
++					}
++					td_submit_urb_ahci (urb);
++				}
++				spin_unlock_irqrestore (&usb_ed_lock, flags);
++			} else { /* unlink URB, call complete */
+ 				urb_rm_priv_ahci (urb);
+-				urb->complete (urb); 	
+-			}		
++				urb->complete (urb);
++			}
+ 			break;
+-  				
++			
+ 		case PIPE_BULK:
+ 		case PIPE_CONTROL: /* unlink URB, call complete */
+ 			urb_rm_priv_ahci (urb);
+@@ -299,46 +470,62 @@
+ 	unsigned int pipe = urb->pipe;
+ 	int maxps = usb_maxpacket (urb->dev, pipe, usb_pipeout (pipe));
+ 	int i, size = 0;
+-///	unsigned long flags;
++	unsigned long flags;
+ 	int bustime = 0;
+ 	int mem_flags = ALLOC_FLAGS;
+-
++	
++	DPRINTF("sahci_submit_urb: (%p) ",urb);
++	
+ 	if (!urb->dev || !urb->dev->bus)
++	{
++		DPRINTF("sahci_submit_urb: -ENODEV\n");
+ 		return -ENODEV;
+-
+-	if (urb->hcpriv)			/* urb already in use */
++	}
++	
++	if (urb->hcpriv) /* urb already in use */
++	{
++		DPRINTF("sahci_submit_urb: -EINVAL\n");
+ 		return -EINVAL;
+-
++	}
++	
++	
+ 	usb_inc_dev_use (urb->dev);
+ 	ohci = (ohci_t *) urb->dev->bus->hcpriv;
+-
++	
+ 	/* handle a request to the virtual root hub */
+-	if (usb_pipedevice (pipe) == ohci->rh.devnum) 
++	if (usb_pipedevice (pipe) == ohci->rh.devnum)
++#ifdef DEBUG
++	{
++		int retval;
++		retval = ahci_rh_submit_urb (urb);
++		DPRINTF("sahci_submit_urb: rh_s retval: (%i)\n",retval);
++		return retval;
++	}
++#else
+ 		return ahci_rh_submit_urb (urb);
+-
+-#ifdef AHCI_VERBOSE_DEBUG
+-	printk("URB SUB[%p] PIPE=%08x size=%04x\n",urb,pipe,urb->transfer_buffer_length);
+ #endif
+-
++	DPRINTF("URB SUB[%p] PIPE[%08x] size[%04x]\n",urb,pipe,urb->transfer_buffer_length);
++	
+ 	/* when controller's hung, permit only roothub cleanup attempts
+ 	 * such as powering down ports */
+ 	if (ohci->disabled) {
++		DPRINTF("ohci->disabled %p\n",urb->dev);
+ 		usb_dec_dev_use (urb->dev);	
+ 		return -ESHUTDOWN;
+ 	}
+-
++	
+ 	/* every endpoint has a ed, locate and fill it */
+ 	if (!(ed = ep_add_ed_ahci (urb->dev, pipe, urb->interval, 1, mem_flags))) {
+ 		usb_dec_dev_use (urb->dev);
+-		printk("neo ep_add_ed() failed!!\n");
++		DPRINTF("sahci_submit_urb: ep_add_ed() failed!!\n");
+ 		return -ENOMEM;
+ 	}
+-
++	
+ 	/* for the private part of the URB we need the number of TDs (size) */
+ 	switch (usb_pipetype (pipe)) {
+ 		case PIPE_BULK:	/* one TD for every 4096 Byte */
+ 			size = (urb->transfer_buffer_length - 1) / 4096 + 1;
+-
++			
+ 			/* If the transfer size is multiple of the pipe mtu,
+ 			 * we may need an extra TD to create a empty frame
+ 			 * Jean II */
+@@ -347,62 +534,54 @@
+ 			    (urb->transfer_buffer_length != 0) && 
+ 			    ((urb->transfer_buffer_length % maxps) == 0))
+ 				size++;
+-
+-#ifdef  AHCI_VERBOSE_DEBUG
+-			printk(" BULK: size=%d\n", size);
+-#endif
++			
++			DPRINTF("sahci_submit_urb:BULK: size=%d ", size);
+ 			break;
+ 		case PIPE_ISOCHRONOUS: /* number of packets from URB */
+-#ifdef  AHCI_VERBOSE_DEBUG
+-			printk(" ISOCHRONOUS \n");
+-#endif
+ 			size = urb->number_of_packets;
++			DPRINTF("sahci_submit_urb: ISOCHRONOUS size=%d ", size);
+ 			if (size <= 0) {
+ 				usb_dec_dev_use (urb->dev);	
+ 				return -EINVAL;
+ 			}
+-			for (i = 0; i < urb->number_of_packets; i++) {
+-  				urb->iso_frame_desc[i].actual_length = 0;
+-  				urb->iso_frame_desc[i].status = -EXDEV;
+-  			}
++			for (i = 0; i < urb->number_of_packets; i++)
++			{
++				urb->iso_frame_desc[i].actual_length = 0;
++				urb->iso_frame_desc[i].status = -EXDEV;
++			}
+ 			break;
+ 		case PIPE_CONTROL: /* 1 TD for setup, 1 for ACK and 1 for every 4096 B */
++			DPRINTF("sahci_submit_urb: Control ");
+ 			size = (urb->transfer_buffer_length == 0)? 2: 
+ 			       (urb->transfer_buffer_length - 1) / 4096 + 3;
+ 			break;
+ 		case PIPE_INTERRUPT: /* one TD */
+-#ifdef  AHCI_VERBOSE_DEBUG
+-			printk(" INTERRUPT \n");
+-#endif
++			DPRINTF("sahci_submit_urb: Interrupt ");
+ 			size = 1;
+ 			break;
+ 	}
+-
++	
+ 	/* allocate the private part of the URB */
+ 	urb_priv = kmalloc (sizeof (urb_priv_t) + size * sizeof (td_t *), ALLOC_FLAGS);
+-
+-#ifdef  AHCI_VERBOSE_DEBUG
+-	printk(" URB private %p\n",urb_priv);
+-#endif
++	
++	DPRINTF(" URB private %p \n",urb_priv);
+ 	if (!urb_priv) {
+ 		usb_dec_dev_use (urb->dev);	
+ 		return -ENOMEM;
+ 	}
+ 	memset (urb_priv, 0, sizeof (urb_priv_t) + size * sizeof (td_t *));
+-
+-///	init_waitqueue_head (&urb_priv->wait);		// not used?
+-
++	
+ 	/* fill the private part of the URB */
+ 	urb_priv->length = size;
+ 	urb_priv->ed = ed;
+-	urb->hcpriv = urb_priv;
+-
++	
+ 	/* allocate the TDs (updating hash chains) */
+-
+-/*  move for new arch.	
++	spin_lock_irqsave (&usb_ed_lock, flags);
++	
++	/*  move for new arch.
+ 	for (i = 0; i < size; i++) { 
+-		urb_priv->td[i] = td_alloc (ohci, SLAB_ATOMIC);
+-		if (!urb_priv->td[i]) {
++		urb_priv->ed->TD_Addr[i] = td_alloc (ohci, SLAB_ATOMIC);
++		if (!urb_priv->ed->TD_Addr[i]) {
+ 			urb_priv->length = i;
+ 			urb_free_priv_ahci (ohci, urb_priv);
+ 			spin_unlock_irqrestore (&usb_ed_lock, flags);
+@@ -412,19 +591,23 @@
+ 	}	
+ */	
+ 
+-	if (ed->state == ED_NEW || (ed->state & ED_DEL)) {	/// may be always false
+-		urb_free_priv_ahci (ohci, urb);
++	if (ed->state == ED_NEW || (ed->state & ED_DEL)) {
++		urb_free_priv_ahci (ohci, urb_priv);
++		spin_unlock_irqrestore(&usb_ed_lock, flags);
+ 		usb_dec_dev_use (urb->dev);	
+ 		return -EINVAL;
+ 	}
+-
++	
+ 	/* allocate and claim bandwidth if needed; ISO
+ 	 * needs start frame index if it was't provided.
+ 	 */
+ 	switch (usb_pipetype (pipe)) {
+ 		case PIPE_ISOCHRONOUS:
+ 			if (urb->transfer_flags & USB_ISO_ASAP) {
+-				urb->start_frame = ed->last_iso + 1;
++				urb->start_frame = ((ed->state == ED_OPER)
++					? (ed->last_iso + 1)
++					: (ReadDw (&ohci->regs->fmnumber) + 10)) & 0xffff;
++				DPRINTF("sahci_submit_urb: PIPE_ISOCHRONOUS start_frame=%d\n", urb->start_frame);
+ 			}
+ 			/* FALLTHROUGH */
+ 		case PIPE_INTERRUPT:
+@@ -432,7 +615,8 @@
+ 				bustime = usb_check_bandwidth (urb->dev, urb);
+ 			}
+ 			if (bustime < 0) {
+-				urb_free_priv_ahci (ohci, urb);
++				urb_free_priv_ahci (ohci, urb_priv);
++				spin_unlock_irqrestore (&usb_ed_lock, flags);
+ 				usb_dec_dev_use (urb->dev);	
+ 				return bustime;
+ 			}
+@@ -441,12 +625,17 @@
+ 			urb->timeout = 0;
+ #endif
+ 	}
+-
++	
+ 	urb->actual_length = 0;
++	urb->hcpriv = urb_priv;
+ 	urb->status = USB_ST_URB_PENDING;
+-
+-	if (ed->state != ED_OPER)
+-		ep_link (ohci, ed);
++	
++	/* link the ed into a chain if is not already */
++	if (ed->state != ED_OPER) //MG: weet niet of ep_link werkt
++	{
++		DPRINTF("Missing ep_link\n");
++	}
++//		ep_link (ohci, ed);   //niet dus...
+ 
+ 	/* fill the TDs and link it to the ed */
+ 	td_submit_urb_ahci (urb);
+@@ -455,24 +644,25 @@
+ 	/* maybe add to ordered list of timeouts */
+ 	if (urb->timeout) {
+ 		struct list_head	*entry;
+-
++		
+ 		urb->timeout += jiffies;
+-
++		
+ 		list_for_each (entry, &ohci->timeout_list) {
+ 			struct urb	*next_urb;
+-
++			
+ 			next_urb = list_entry (entry, struct urb, urb_list);
+ 			if (time_after_eq (urb->timeout, next_urb->timeout))
+ 				break;
+ 		}
+ 		list_add (&urb->urb_list, entry);
+-
++		
+ 		/* drive timeouts by SF (messy, but works) */
+ 		writel (OHCI_INTR_SF, &ohci->regs->intrenable);	
+-
+ 	}
+ #endif
+-
++	
++	spin_unlock_irqrestore (&usb_ed_lock, flags);
++	
+ 	return 0;
+ }
+ 
+@@ -481,11 +671,13 @@
+ /* deactivate all TDs and remove the private part of the URB */
+ /* interrupt callers must use async unlink mode */
+ 
+-static int sahci_unlink_urb (struct urb * urb)
++static int sahci_unlink_urb (struct urb *urb)
+ {
+-	unsigned long flags;
++	//unsigned long flags;
+ 	ohci_t * ohci;
+ 	
++	DPRINTF("sahci_unlink_urb\n");
++	
+ 	if (!urb) /* just to be sure */ 
+ 		return -EINVAL;
+ 		
+@@ -493,35 +685,51 @@
+ 		return -ENODEV;
+ 
+ 	ohci = (ohci_t *) urb->dev->bus->hcpriv; 
+-
+-#ifdef	AHCI_VERBOSE_DEBUG
+-	printk("URB UNLINK[%p]\n",urb);
+-#endif
+-
++	
++	DPRINTF("URB UNLINK[%p]\n",urb);
++	
+ 	/* handle a request to the virtual root hub */
+ 	if (usb_pipedevice (urb->pipe) == ohci->rh.devnum)
+ 		return ahci_rh_unlink_urb (urb);
+-
+-	spin_lock_irqsave(&usb_ed_lock, flags);
++	
+ 	if (urb->hcpriv && (urb->status == USB_ST_URB_PENDING)) { 
+ 		if (!ohci->disabled) {
+ 			urb_priv_t  * urb_priv;
+ 			
++			/* interrupt code may not sleep; it must use
++			 * async status return to unlink pending urbs.
++			 */
++			if (!(urb->transfer_flags & USB_ASYNC_UNLINK)
++					&& in_interrupt ()) {
++				err ("bug in call from %p; use async!",
++					__builtin_return_address(0));
++				return -EWOULDBLOCK;
++			}
++			
+ 			/* flag the urb and its TDs for deletion in some
+ 			 * upcoming SF interrupt delete list processing
+ 			 */
+ 			
+ 			urb_priv = urb->hcpriv;
+-
++			
+ 			if (!urb_priv || (urb_priv->state == URB_DEL)) {
+-				spin_unlock_irqrestore(&usb_ed_lock, flags);
++				
+ 				return 0;
+ 			}
+-	
++			
+ 			urb_priv->state = URB_DEL; 
+-			ep_rm_ed (urb->dev, urb_priv->ed);
+-			urb_priv->ed->state |= ED_URB_DEL;
+-
++//MG:
++//			ep_rm_ed (urb->dev, urb_priv->ed);
++//			urb_priv->ed->state |= ED_URB_DEL;
++//-
++//			if (!(urb->transfer_flags & USB_ASYNC_UNLINK)) {
++//				DPRINTF("sahci_unlink_urb: missing code\n");
++//			} else {
++//				/* usb_dec_dev_use done in dl_del_list() */
++//				urb->status = -EINPROGRESS;
++//				spin_unlock_irqrestore (&usb_ed_lock, flags);
++//			}
++//		} else {
+ 			urb_rm_priv_ahci (urb);
+ 			if (urb->transfer_flags & USB_ASYNC_UNLINK) {
+ 				urb->status = -ECONNRESET;
+@@ -531,7 +739,6 @@
+ 				urb->status = -ENOENT;
+ 		}
+ 	}
+-	spin_unlock_irqrestore(&usb_ed_lock, flags);
+ 	return 0;
+ }
+ 
+@@ -542,35 +749,37 @@
+ static int sahci_alloc_dev (struct usb_device *usb_dev)
+ {
+ 	struct ohci_device * dev;
+-///	ohci_t * ohci = usb_dev->bus->hcpriv;
+-///	struct ohci_device * next_dev;
+-///	__u32  HostHeadStart;
+-
+-	dev = dev_alloc (usb_dev->bus->hcpriv, ALLOC_FLAGS);
++	ohci_t * ohci = usb_dev->bus->hcpriv;
++	struct ohci_device * next_dev;
++	__u32  HostHeadStart;
++	
++	DPRINTF("sahci_alloc_dev ");
++	
++	dev = dev_alloc ((struct ohci *) usb_dev->bus->hcpriv, ALLOC_FLAGS);
+ 	if (!dev)
++	{
++		DPRINTF("no memory!! ");
+ 		return -ENOMEM;
++	}
+ 
+ 	usb_dev->hcpriv = dev;
+-#ifdef  AHCI_VERBOSE_DEBUG
+-	printk("[%d] HC Priv = %p\n",usb_dev->devnum,usb_dev->hcpriv);
+-#endif
+-
++	DPRINTF("devnum: %i HC Priv = %p \n", usb_dev->devnum,usb_dev->hcpriv);
++	
+ //	WriteDw(2,&ohci->regs->hostcontrol);
+ //	mdelay(5);
+-///	HostHeadStart=ReadDw(&ohci->regs->ed_hosthead);
+-
+-///	if ( HostHeadStart == 0 )
+-/*
+-	if (ohci->ed_start == NULL) {
++	HostHeadStart=ReadDw(&ohci->regs->ed_hosthead);
+ 		
+-///		WriteDw(usb_dev->hcpriv,&ohci->regs->ed_hosthead); //temp sol.
++	if ( HostHeadStart == 0x00) //NULL
++	{
++		WriteDw((int)usb_dev->hcpriv,&ohci->regs->ed_hosthead); //temp sol.
++		DPRINTF("HostHeadStart == 0x00 changed into %p\n", usb_dev->hcpriv);
+ 		dev->ed[NUM_EDS-1].IsLast = 1;
+ 		(struct ohci_device *) dev->ed[NUM_EDS-1].hwNextED = dev;
+ 		return 0;
+ 	}
+ 	next_dev = (struct ohci_device *)HostHeadStart;
+-	printk("Next Point = %08lx \n",(long unsigned)next_dev->ed[NUM_EDS-1].hwNextED);
+-
++	DPRINTF("HostHeadStart = %p Next Point = %08x \n", next_dev, next_dev->ed[NUM_EDS-1].hwNextED);
++	
+ 	while (!(next_dev->ed[NUM_EDS-1].IsLast))
+ 	{
+ 		next_dev = (struct ohci_device *)next_dev->ed[NUM_EDS-1].hwNextED;
+@@ -581,7 +790,6 @@
+ 	dev->ed[NUM_EDS-1].hwNextED = HostHeadStart;
+ //	WriteDw(usb_dev->hcpriv,&ohci->regs->ed_hosthead); //temp sol.
+ //	mdelay(10);
+-*/
+ 	return 0;
+ }
+ 
+@@ -593,19 +801,18 @@
+ static int sahci_free_dev (struct usb_device * usb_dev)
+ {
+ 	unsigned long flags;
+-	ed_t * ed;
+-	int  cnt = 0,i=0; ///,j=0;
++	int i = 0;
++	int cnt = 0;
++	int j = 0;
+ 
+ 	struct ohci_device * dev = usb_to_ahci (usb_dev);
+-///	struct ohci_device * prev_dev; 
++	struct ohci_device * prev_dev;
+ 	ohci_t * ohci = usb_dev->bus->hcpriv;
+-///	struct td *td;
+-///	__u32  HostHeadStart;
++	struct td *td;
++	__u32  HostHeadStart;
++	
++	DPRINTF("sahci_free_dev: %p\n", dev);
+ 	
+-#ifdef  AHCI_VERBOSE_DEBUG
+-	printk("FREE DEV: %p\n", dev);
+-#endif
+-
+ 	if (!dev)
+ 		return 0;
+ 	
+@@ -615,68 +822,66 @@
+ 		 * to defend against bugs that prevent that.
+ 		 */
+ 		spin_lock_irqsave (&usb_ed_lock, flags);
+-
+-///		WriteDw(2,&ohci->regs->hostcontrol);
+-///		mdelay(10);
+-///		HostHeadStart=ReadDw(&ohci->regs->ed_hosthead);
+-
+-///		prev_dev = (struct ohci_device *)HostHeadStart;
+-
+-///		while (!(prev_dev->ed[NUM_EDS-1].IsLast))
+-///		{ 
+-///			if ( dev == (struct ohci_device *)prev_dev->ed[NUM_EDS-1].hwNextED )
+-///			{
+-///    				prev_dev->ed[NUM_EDS-1].IsLast = dev->ed[NUM_EDS-1].IsLast;
+-///				prev_dev->ed[NUM_EDS-1].hwNextED =dev->ed[NUM_EDS-1].hwNextED;
+-///				break;
+-///			}
+-///			prev_dev = (struct ohci_device *)prev_dev->ed[NUM_EDS-1].hwNextED;
+-///		}
+-
+-		for(i = 0; i < NUM_EDS; i++) {
+-			ed = &(dev->ed[i]);
+-			if (ed->state != ED_NEW) {
+-				if (ed->state == ED_OPER) {
+-					/* driver on that interface didn't unlink an urb */
+-				//	dbg ("driver usb-%s dev %d ed 0x%x unfreed URB",
+-				//		ohci->ohci_dev->slot_name, usb_dev->devnum, i);
+-					ep_unlink (ohci, ed);
+-				}
+-				ep_rm_ed (usb_dev, ed);
+-				///ed->state = ED_DEL;
+-				cnt++;
++		
++		WriteDw(2,&ohci->regs->hostcontrol);
++		mdelay(10);
++		HostHeadStart=ReadDw(&ohci->regs->ed_hosthead);
++		
++		prev_dev = (struct ohci_device *)HostHeadStart;
++		
++		while (!(prev_dev->ed[NUM_EDS-1].IsLast))
++		{
++			if ( dev == (struct ohci_device *)prev_dev->ed[NUM_EDS-1].hwNextED )
++			{
++				prev_dev->ed[NUM_EDS-1].IsLast = dev->ed[NUM_EDS-1].IsLast;
++				prev_dev->ed[NUM_EDS-1].hwNextED =dev->ed[NUM_EDS-1].hwNextED;
++				break;
+ 			}
++			prev_dev = (struct ohci_device *)prev_dev->ed[NUM_EDS-1].hwNextED;
+ 		}
+-
+-/*
+-  	//free allocated TD
+-  		for(i=0;i<NUM_EDS;i++)
+-  		{
+-  			for (j=0;j<3;j++)
+-  			{  
+-  				if (dev->ed[i].TD_Addr[j])
++		
++	//	for(i = 0; i < NUM_EDS; i++) {
++	//		ed = &(dev->ed[i]);
++	//		if (ed->state != ED_NEW) {
++	//			if (ed->state == ED_OPER) {
++	//				/* driver on that interface didn't unlink an urb */
++	//			//	dbg ("driver usb-%s dev %d ed 0x%x unfreed URB",
++	//			//		ohci->ohci_dev->slot_name, usb_dev->devnum, i);
++	//				ep_unlink (ohci, ed);
++	//			}
++	//			ep_rm_ed (usb_dev, ed);
++	//			ed->state = ED_DEL;
++	//			cnt++;
++	//		}
++	//	}
++	
++		//free allocated TD
++		for(i=0;i<NUM_EDS;i++)
++		{
++			for (j=0;j<3;j++)
++			{
++				if (dev->ed[i].TD_Addr[j])
+ 				{
+-  					td = (struct td *)dev->ed[i].TD_Addr[j];	
+-  					td_free(ohci,td);
+-  	  			}
+-  	  		}	
++					td = (struct td *)dev->ed[i].TD_Addr[j];
++					td_free(ohci,td);
++				}
++			}
+ 			if (dev->ed[i].TD_Addr[3])
+ 				dev->ed[i].TD_Addr[3] &= 0xDFFFFFFF;
+-  	  		kfree( (void *)dev->ed[i].TD_Addr[3]);
+-  		}
+-*/
+-
+-  		spin_unlock_irqrestore (&usb_ed_lock, flags);
+-///  		mdelay(100);
+-///	        WriteDw(6,&ohci->regs->hostcontrol);
+- 
++			kfree( (void *)dev->ed[i].TD_Addr[3]);
++		}
++		spin_unlock_irqrestore (&usb_ed_lock, flags);
++		mdelay(100);
++		WriteDw(6,&ohci->regs->hostcontrol);
++		
+ 		/* if the controller is running, tds for those unlinked
+ 		 * urbs get freed by dl_del_list at the next SF interrupt
+ 		 */
+-		if (cnt > 0) {
++		if (cnt > 0)
++		{
+ 			if (ohci->disabled) {
+ 				/* FIXME: Something like this should kick in,
+-				 * though it's currently an exotic case ...
++				 * though it's currently an exotic case 
+ 				 * the controller won't ever be touching
+ 				 * these lists again!!
+ 				dl_del_list (ohci,
+@@ -684,27 +889,28 @@
+ 				 */
+ 				warn ("TD leak, %d", cnt);
+ 			} else if (!in_interrupt ()) {
+-			
++				DPRINTF("sahci_free_dev: missing code\n");
++			/*	
+ 				DECLARE_WAIT_QUEUE_HEAD (freedev_wakeup); 
+ 				DECLARE_WAITQUEUE (wait, current);
+ 				int timeout = OHCI_UNLINK_TIMEOUT;
+-
+-				/* SF interrupt handler calls dl_del_list */
+-				add_wait_queue (&freedev_wakeup, &wait);
+-				dev->wait = &freedev_wakeup;
++				
++			*/	/* SF interrupt handler calls dl_del_list */
++			/*	add_wait_queue (&dev->wait, &wait);
+ 				set_current_state(TASK_UNINTERRUPTIBLE);
+ 				while (timeout && dev->ed_cnt)
+ 					timeout = schedule_timeout (timeout);
+ 				set_current_state(TASK_RUNNING);
+-				remove_wait_queue (&freedev_wakeup, &wait);
++				remove_wait_queue (&dev->wait, &wait);
+ 				if (dev->ed_cnt) {
+ 					err ("free device %d timeout", usb_dev->devnum);
+ 					return -ETIMEDOUT;
+ 				}
++			 */
+ 			} else {
+ 				/* likely some interface's driver has a refcount bug */
+ 				err ("bus %s devnum %d deletion in interrupt",
+-					ohci->ohci_dev->slot_name, usb_dev->devnum);
++					hcd_name, usb_dev->devnum);
+ 				BUG ();
+ 			}
+ 		}
+@@ -723,7 +929,7 @@
+ static int sahci_get_current_frame_number (struct usb_device *usb_dev) 
+ {
+ 	ohci_t * ohci = usb_dev->bus->hcpriv;
+-	
++	DPRINTF("sahci_get_current_frame_number: %i\n", le16_to_cpu(ohci->regs->fmnumber));
+ 	return le16_to_cpu (ohci->regs->fmnumber);
+ }
+ 
+@@ -737,6 +943,9 @@
+ 	sahci_unlink_urb
+ };
+ 
++/*-------------------------------------------------------------------------*
++ * ED handling functions
++ *-------------------------------------------------------------------------*/  
+ 
+ 
+ /*-------------------------------------------------------------------------*/
+@@ -756,133 +965,148 @@
+ /*-------------------------------------------------------------------------*/
+ 
+ /* link an ed into one of the HC chains */
+-
++/*
+ static int ep_link (ohci_t * ohci, ed_t * edi)
+-{	 
+-///	int i;
+-///	int inter;
+-///	__u32 * ed_p;
++{
++	int i;
++	int inter;
++	__u32 * ed_p;
+ 	volatile ed_t * ed = edi;
+-
+-
++	
++	DPRINTF("ep_link: ");
++	
++	ed->state = ED_OPER;
++	
+ 	switch (ed->type) {
+ 	case PIPE_CONTROL:
+-///		if (!ohci->ed_controltail && !ohci->ed_rm_list[0] &&
+-///			!ohci->ed_rm_list[1] && !ohci->sleeping) {
+-/////			ohci->hc_control |= OHCI_CTRL_DMA_EN;
+-///			//writel (ohci->hc_control, &ohci->regs->control);
+-///	//	//	WriteDw(ohci->hc_control,&ohci->regs->hostcontrol);
+-///		}
++		DPRINTF("PIPE_CONTROL: ");
++		if (ohci->ed_controltail == NULL) {
++			//writel (ed->dma, &ohci->regs->ed_controlhead);
++//			WriteDw(2,&ohci->regs->hostcontrol);
++//			WriteDw(2,&ohci->regs->hostcontrol);
++			WriteDw(ed->dma,&ohci->regs->ed_hosthead);
++			WriteDw(6,&ohci->regs->hostcontrol);
++			ohci->ed_start = ed; 
++		} else {
++			ohci->ed_controltail->hwNextED = cpu_to_le32(ed->dma);
++		}
++		ed->ed_prev = ohci->ed_controltail;
++		if (!ohci->ed_controltail && !ohci->ed_rm_list[0] &&
++			!ohci->ed_rm_list[1] && !ohci->sleeping) {
++//			ohci->hc_control |= OHCI_CTRL_DMA_EN;
++			//writel (ohci->hc_control, &ohci->regs->control);
++	//	//	WriteDw(ohci->hc_control,&ohci->regs->hostcontrol);
++		}
++		ohci->ed_controltail = edi;	  
+ 		break;
+-
++		
+ 	case PIPE_BULK:
+-		//ed->hwNextED = &ed->unused[0]; //for workaround HW bug 20030724 Junius
+-//////		ed->hwNextED = (ed->dma)+0x30; //for workaround HW bug 20030724 Junius
+-///		if (!ohci->ed_controltail && !ohci->ed_rm_list[0] &&
+-///			!ohci->ed_rm_list[1] && !ohci->sleeping) {
+-///
+-///	//		WriteDw(ohci->hc_control,&ohci->regs->hostcontrol);
+-///		}
++		DPRINTF("PIPE_BULK: ");
++		ed->hwNextED = (ed->dma)+0x30; //for workaround HW bug 20030724 Junius
++		if (ohci->ed_controltail == NULL) {
++//			WriteDw(2,&ohci->regs->hostcontrol);
++//			WriteDw(2,&ohci->regs->hostcontrol);
++			WriteDw(ed->dma,&ohci->regs->ed_hosthead);
++//			mdelay(1);
++			WriteDw(6,&ohci->regs->hostcontrol);
++			ohci->ed_start = ed; 
++		} else {
++			ohci->ed_controltail->hwNextED = cpu_to_le32(ed->dma);
++		}
++		ed->ed_prev = ohci->ed_controltail;
++		if (!ohci->ed_controltail && !ohci->ed_rm_list[0] &&
++			!ohci->ed_rm_list[1] && !ohci->sleeping) {
++
++	//		WriteDw(ohci->hc_control,&ohci->regs->hostcontrol);
++		}
++		ohci->ed_controltail = edi;
+ 		break;
+ 	
+ 	case PIPE_INTERRUPT:
++		DPRINTF("PIPE_INTERRUPT: ");
+ 		//ed->hwNextED = &ed->unused[0]; //for workaround HW bug 20030724 Junius
+-///		ed->hwNextED = (ed->dma)+0x30; //for workaround HW bug 20030724 Junius
+-///		ed->hwINFO |= cpu_to_le32(OHCI_ED_INT);
+-///		if (!ohci->ed_controltail && !ohci->ed_rm_list[0] &&
+-///			!ohci->ed_rm_list[1] && !ohci->sleeping) {
+-///
+-///	//		WriteDw(ohci->hc_control,&ohci->regs->hostcontrol);
+-///		}
++		ed->hwNextED = (ed->dma)+0x30; //for workaround HW bug 20030724 Junius
++		ed->hwINFO |= cpu_to_le32(OHCI_ED_INT);
++		if (ohci->ed_controltail == NULL) {
++			//writel (ed->dma, &ohci->regs->ed_controlhead);
++//			WriteDw(2,&ohci->regs->hostcontrol);
++//			WriteDw(2,&ohci->regs->hostcontrol);
++			WriteDw(ed->dma,&ohci->regs->ed_hosthead);
++//			mdelay(1);
++			WriteDw(6,&ohci->regs->hostcontrol);
++			ohci->ed_start = ed; 
++		} else {
++			ohci->ed_controltail->hwNextED = cpu_to_le32(ed->dma);
++		}
++		ed->ed_prev = ohci->ed_controltail;
++		if (!ohci->ed_controltail && !ohci->ed_rm_list[0] &&
++			!ohci->ed_rm_list[1] && !ohci->sleeping) {
++
++	//		WriteDw(ohci->hc_control,&ohci->regs->hostcontrol);
++		}
++		ohci->ed_controltail = edi;
+ 		break;
+ 	
+ 	case PIPE_ISOCHRONOUS:
+-
++		DPRINTF("PIPE_ISOCHRONOUS: ");
++		ed->hwNextED = 0;
++		ed->int_interval = 1;
++		if (ohci->ed_isotail != NULL) {
++			ohci->ed_isotail->hwNextED = cpu_to_le32 (ed->dma);
++			ed->ed_prev = ohci->ed_isotail;
++		} else {
++			for ( i = 0; i < 32; i += inter) {
++				inter = 1;
++				for (ed_p = &(ohci->hcca->int_table[ep_rev (5, i)]); 
++					*ed_p != 0; 
++					ed_p = &((dma_to_ed (ohci, le32_to_cpup (ed_p)))->hwNextED)) 
++						inter = ep_rev (6, (dma_to_ed (ohci, le32_to_cpup (ed_p)))->int_interval);
++				*ed_p = cpu_to_le32 (ed->dma);	
++			}	
++			ed->ed_prev = NULL;
++		}	
++		ohci->ed_isotail = edi;  
++#ifdef DEBUG
++		ep_print_int_eds (ohci, "LINK_ISO");
++#endif
+ 		break;
+ 	}
+-
+-	if (ohci->ed_tail == NULL) {
+-//		WriteDw(2,&ohci->regs->hostcontrol);
+-		ohci->ed_start = edi;
+-		WriteDw(ed->dma,&ohci->regs->ed_hosthead);
+-		WriteDw(6,&ohci->regs->hostcontrol);
+-//		mdelay(1);
+-	} else {
+-		ohci->ed_tail->hwNextED = cpu_to_le32(ed->dma);
+-		ohci->ed_tail->ed_next = edi;
+-		WriteDw(6,&ohci->regs->hostcontrol);			/// may be not needed
+-	}
+-
+-	edi->ed_next = NULL;
+-	edi->ed_prev = ohci->ed_tail;
+-	ohci->ed_tail = edi;
+-
+-	ed->state = ED_OPER;
+-
+ 	return 0;
+ }
+-
++*/
+ /*-------------------------------------------------------------------------*/
+ 
+ /* unlink an ed from one of the HC chains. 
+  * just the link to the ed is unlinked.
+  * the link from the ed still points to another operational ed or 0
+  * so the HC can eventually finish the processing of the unlinked ed */
+-
++/*
+ static int ep_unlink (ohci_t * ohci, ed_t * ed) 
+ {
+-///	int i;
+-	ed_t * ed_prev;
+-	ed_t * ed_next;
+-
++	int i;
++	__u32 * ed_p;
++	
+ 	ed->hwINFO |= cpu_to_le32 (OHCI_ED_SKIP);
+ 	
+-	ed_prev = ed->ed_prev;
+-	ed_next = ed->ed_next;
+-
+-#ifdef AHCI_VERBOSE_DEBUG
+-	printk("EP_UNLINK [%p], prev=%p, next=%p\n", ed, ed_prev, ed_next);
+-#endif
+-
+-	if(ed_next == NULL) {
+-		ohci->ed_tail = ed_prev;
+-	} else {
+-		ed_next->ed_prev = ed_prev;
+-	}
+-
+-	if(ed_prev == NULL) {
+-		ohci->ed_start = ed_next;
+-		WriteDw((ed_next == NULL? 0: ed_next->dma), &ohci->regs->ed_hosthead);
+-		WriteDw(6,&ohci->regs->hostcontrol);
+-	} else {
+-		ed_prev->ed_next = ed_next;
+-		ed_prev->hwNextED = cpu_to_le32(ed_next == NULL? 0: ed_next->dma);
+-	}
+-
+-
+-/*
++	DPRINTF("EP_UNLINK [%p], prev=%p\n", ed, ed->ed_prev);
+ 	switch (ed->type) {
+ 	case PIPE_CONTROL:
+ 		if (ed->ed_prev == NULL) {
+ 			if (!ed->hwNextED) {
+ 				ohci->hc_control &= ~OHCI_CTRL_CLE;
+-		//		writel (ohci->hc_control, &ohci->regs->control);
+ 			}
+-			//if ( (ed->hwNextED)== (&ed->unused[0]))
+-//			WriteDw(2,&ohci->regs->hostcontrol);
+-//			WriteDw(2,&ohci->regs->hostcontrol);
+ 			if (ed->hwNextED == (ed->dma)+0x30)
+-			 WriteDw ( 0,&ohci->regs->ed_hosthead);
+-			else 
+-			 WriteDw (le32_to_cpup (&ed->hwNextED), &ohci->regs->ed_hosthead);
+-//		mdelay(1);	 
++				WriteDw ( 0,&ohci->regs->ed_hosthead);
++			else
++				WriteDw (le32_to_cpup (&ed->hwNextED), &ohci->regs->ed_hosthead);
++//		mdelay(1);
+ //		WriteDw(6,&ohci->regs->hostcontrol);	 
+ 		} else {
+ 			if ( ed->hwNextED == (ed->dma)+0x30)
+ 			{
+-			ed->ed_prev->hwNextED = (ed->ed_prev->dma)+0x30;	
+-			} else 	
+-			ed->ed_prev->hwNextED = ed->hwNextED;
++				ed->ed_prev->hwNextED = (ed->ed_prev->dma)+0x30;	
++			} else
++				ed->ed_prev->hwNextED = ed->hwNextED;
+ 		}
+ 		if (ohci->ed_controltail == ed) {
+ 			ohci->ed_controltail = ed->ed_prev;
+@@ -890,24 +1114,23 @@
+ 			(dma_to_ed (ohci, le32_to_cpup (&ed->hwNextED)))->ed_prev = ed->ed_prev;
+ 		}
+ 		break;
+-
++		
+ 	case PIPE_BULK:
+ 		if (ed->ed_prev == NULL) {
+ 			if (!ed->hwNextED) {
+ 				ohci->hc_control &= ~OHCI_CTRL_CLE;
+-		//		writel (ohci->hc_control, &ohci->regs->control);
+ 			}
+-//		  	WriteDw(2,&ohci->regs->hostcontrol);
+-//		  	WriteDw(2,&ohci->regs->hostcontrol);
++//			WriteDw(2,&ohci->regs->hostcontrol);
++//			WriteDw(2,&ohci->regs->hostcontrol);
+ 			WriteDw (le32_to_cpup (&ed->hwNextED), &ohci->regs->ed_hosthead);
+ //			mdelay(1);
+ 			WriteDw(6,&ohci->regs->hostcontrol);
+ 		} else {
+ 			if ( ed->hwNextED == (ed->dma)+0x30)
+ 			{
+-			ed->ed_prev->hwNextED = (ed->ed_prev->dma)+0x30;	
++				ed->ed_prev->hwNextED = (ed->ed_prev->dma)+0x30;	
+ 			} else 
+-			ed->ed_prev->hwNextED = ed->hwNextED;
++				ed->ed_prev->hwNextED = ed->hwNextED;
+ 		}
+ 		if (ohci->ed_controltail == ed) {
+ 			ohci->ed_controltail = ed->ed_prev;
+@@ -915,12 +1138,11 @@
+ 			(dma_to_ed (ohci, le32_to_cpup (&ed->hwNextED)))->ed_prev = ed->ed_prev;
+ 		}
+ 		break;
+-
++		
+ 	case PIPE_INTERRUPT:
+ 		if (ed->ed_prev == NULL) {
+ 			if (!ed->hwNextED) {
+ 				ohci->hc_control &= ~OHCI_CTRL_CLE;
+-		//		writel (ohci->hc_control, &ohci->regs->control);
+ 			}
+ //			WriteDw(2,&ohci->regs->hostcontrol);
+ //			WriteDw(2,&ohci->regs->hostcontrol);
+@@ -930,9 +1152,9 @@
+ 		} else {
+ 			if ( ed->hwNextED == (ed->dma)+0x30)
+ 			{
+-			ed->ed_prev->hwNextED = (ed->ed_prev->dma)+0x30;	
++				ed->ed_prev->hwNextED = (ed->ed_prev->dma)+0x30;	
+ 			} else 
+-			ed->ed_prev->hwNextED = ed->hwNextED;
++				ed->ed_prev->hwNextED = ed->hwNextED;
+ 		}
+ 		if (ohci->ed_controltail == ed) {
+ 			ohci->ed_controltail = ed->ed_prev;
+@@ -940,17 +1162,29 @@
+ 			(dma_to_ed (ohci, le32_to_cpup (&ed->hwNextED)))->ed_prev = ed->ed_prev;
+ 		}
+ 		break;
+-
++		
+ 	case PIPE_ISOCHRONOUS:
+-	
++		DPRINTF("ep_unlink: missing  code PIPE_ISOCHRONOUS\n");
++//		if (ohci->ed_isotail == ed)
++//			ohci->ed_isotail = ed->ed_prev;
++//		if (ed->hwNextED != 0) 
++//		    (dma_to_ed (ohci, le32_to_cpup (&ed->hwNextED)))
++//		    	->ed_prev = ed->ed_prev;
++//				    
++//		if (ed->ed_prev != NULL)
++//			ed->ed_prev->hwNextED = ed->hwNextED;
++//		else
++//			periodic_unlink (ohci, ed, 0, 1);
++//#ifdef DEBUG
++//		ep_print_int_eds (ohci, "UNLINK_ISO");
++//#endif
+ 		break;
+ 	}
+-*/
+ 	ed->state = ED_UNLINK;
+ 	return 0;
+ }
+ 
+-
++*/
+ /*-------------------------------------------------------------------------*/
+ 
+ /* add/reinit an endpoint; this should be done once at the usb_set_configuration command,
+@@ -965,121 +1199,122 @@
+ 	int interval,
+ 	int load,
+ 	int mem_flags
+-) {
+-   	ohci_t * ohci = usb_dev->bus->hcpriv;
++)
++{
++	ohci_t * ohci = usb_dev->bus->hcpriv;
+ 	td_t * td;
+ 	ed_t * ed_ret;
+-	volatile ed_t * ed; 
++	volatile ed_t * ed;
+ 	unsigned long flags;
+-
++	
++	DPRINTF("ep_add_ed_ahci\n");
++	
+ 	spin_lock_irqsave (&usb_ed_lock, flags);
+-
++	
+ 	ed = ed_ret = &(usb_to_ahci (usb_dev)->ed[(usb_pipeendpoint (pipe) << 1) |
+ 			(usb_pipecontrol (pipe)? 0: usb_pipeout (pipe))]);
+-
++	
+ 	if ((ed->state & ED_DEL) || (ed->state & ED_URB_DEL)) {
+ 		/* pending delete request */
+ 		spin_unlock_irqrestore (&usb_ed_lock, flags);
+ 		return NULL;
+ 	}
+-
+-//	writel (2, &ohci->regs->hostcontrol); /* start Control list */
++	
+ 	if (ed->state == ED_NEW) {
+-#ifdef  AHCI_VERBOSE_DEBUG
+-		printk("INIT ED: %p interval=%d\n", ed, interval);
+-#endif
+-		ed->hwINFO = cpu_to_le32(OHCI_ED_SKIP); 		/* skip ed */
+-  		/* dummy td; end of td list for ed */
++		ed->hwINFO = cpu_to_le32(OHCI_ED_SKIP); /* skip ed */
++		DPRINTF("ep_add_ed_ahci INIT ED: ed=(%p) interval=%d, hwINFO=%u\n", ed, interval,ed->hwINFO);
++		/* dummy td; end of td list for ed */
++//MG: deze code is niet in OHCI:
+ 		td = td_alloc (ohci, SLAB_ATOMIC | GFP_DMA);
+-
+ 		/* hash the ed for later reverse mapping */
+- 		if (!td /* || !hash_add_ed (ohci, (ed_t *)ed) */ ) {
++		if (!td || !hash_add_ed (ohci, (ed_t *)ed))
++		{	/* out of memory */
++			DPRINTF("ep_add_ed_ahci: out of memory 1\n");
++			if (td)
++				td_free(ohci, td);
++			spin_unlock_irqrestore (&usb_ed_lock, flags);
++			return NULL;
++		}
++		ed->TD_Addr[0] = (__u32)td;
++		ed->hwHeadP = (td->td_dma);
++		td = td_alloc (ohci, SLAB_ATOMIC);
++		
++		/* hash the ed for later reverse mapping */
++		if (!td || !hash_add_ed (ohci, (ed_t *)ed))
++		{	/* out of memory */
++			DPRINTF("ep_add_ed_ahci: out of memory 2\n");
++			if (td)
++				td_free(ohci, td);
++			spin_unlock_irqrestore (&usb_ed_lock, flags);
++			return NULL;
++		}
++		ed->TD_Addr[1] = (__u32)td;
++//-
++		td = td_alloc (ohci, SLAB_ATOMIC);
++		/* hash the ed for later reverse mapping */
++		if (!td || !hash_add_ed (ohci, (ed_t *)ed)) {
+ 			/* out of memory */
+-		        if (td)
+-		            td_free(ohci, td);
++			if (td)
++				td_free(ohci, td);
+ 			spin_unlock_irqrestore (&usb_ed_lock, flags);
+ 			return NULL;
+ 		}
+-///		ed->TD_Addr[0] = (__u32)td;
+-		ed->td_head = td;
+-
+-
+-/*
+-		ed->TD_Addr[3] = kmalloc(4096, GFP_DMA);
++		ed->TD_Addr[2] = (__u32)td;
++		ed->TD_Addr[3] = (__u32)kmalloc(4096, GFP_DMA);
+ 		ed->TD_Addr[3] |= 0xA0000000;
+-
+ 		memset((void *)ed->TD_Addr[3],0,4096);
+-*/
++		
++		
++		ed->hwTailP = (td->td_dma)+sizeof (*td);
+ 		ed->state = ED_UNLINK;
+ 		ed->type = usb_pipetype (pipe);
+ 		usb_to_ahci (usb_dev)->ed_cnt++;
+-
+-		ed->last_iso = (le16_to_cpu (ohci->regs->fmnumber) + 10) & 0xffff;
+-
+-		if (ed->type == PIPE_INTERRUPT /*&& ed->state == ED_UNLINK*/) {
+-			ed->int_period = interval;
+-///			ed->int_load = load;
+-			/* make single TD in link list */
+-			td->td_next = NULL;
+-			td->hwNextTD = 0;
+-			td->hwINFO = cpu_to_le32(ed->last_iso & TD_FN);
+-			ed->td_tail = NULL;
+-			ed->hwTailP = 0;
+-		} else {
+-			/* make loopback link list */
+-			td->td_next = td;
+-			td->hwNextTD = td->td_dma;
+-			ed->td_tail = td;
+-			ed->hwTailP = td->td_dma;
+-		}
+-		ed->hwHeadP = td->td_dma;
+-	}
+-/*
+-	else {
++	} else {
+ 		td = (struct td *)ed->TD_Addr[0];
+ 		if (ed->type == PIPE_BULK)
+ 		{
+-		if ( (ed->hwHeadP) & 0x2)
+-		 ed->hwHeadP = (td->td_dma) | 0x2;
+-		else 
+-		 ed->hwHeadP = (td->td_dma);
++			if ( (ed->hwHeadP) & 0x2)
++				ed->hwHeadP = (td->td_dma) | 0x2;
++			else
++				ed->hwHeadP = (td->td_dma);
+ 		} else
+-		{	
+-		 ed->hwHeadP = (td->td_dma);
++		{
++			ed->hwHeadP = (td->td_dma);
+ 		}
+-
+-	}	 
+-*/
+-
++	}
++	
+ 	ohci->dev[usb_pipedevice (pipe)] = usb_dev;
+-
++	
+ 	ed->hwINFO = cpu_to_le32(usb_pipedevice (pipe)
+ 			| usb_pipeendpoint (pipe) << 7
+ 			| (usb_pipeisoc (pipe)? OHCI_ED_ISO: 0)
+ 			| (ed->type == PIPE_INTERRUPT? OHCI_ED_INT: 0)
+-			| usb_maxpacket (usb_dev, pipe, usb_pipeout (pipe)) << 16
+-			| (usb_pipeslow (pipe)? 0: OHCI_ED_HIGHSPEED));
+-
+-
+-///        if (!usb_pipeslow(pipe))
+-///    		ed->hwINFO |= cpu_to_le32(OHCI_ED_HIGHSPEED);
+-///        if (ed->type == PIPE_INTERRUPT )
+-///    		ed->hwINFO |= cpu_to_le32(OHCI_ED_INT);
+-
+-#ifdef	AHCI_VERBOSE_DEBUG
+-	printk("ED INFO=%08x\n", ed->hwINFO);
+-#endif
+-
+-  	spin_unlock_irqrestore (&usb_ed_lock, flags);
++			| (usb_pipeslow (pipe)? 0: OHCI_ED_HIGHSPEED)
++			| usb_maxpacket (usb_dev, pipe, usb_pipeout (pipe)) << 16);
++/*	
++	if (!usb_pipeslow(pipe))
++		ed->hwINFO |= cpu_to_le32(OHCI_ED_HIGHSPEED);
++	
++	if (ed->type == PIPE_INTERRUPT )
++		ed->hwINFO |= cpu_to_le32(OHCI_ED_INT);
++*/	
++	if (ed->type == PIPE_INTERRUPT && ed->state == ED_UNLINK)
++	{
++		DPRINTF("ep_add_ed_ahci: int_period=%i, int_load=%i\n",interval,load);
++		ed->int_period = interval;
++		ed->int_load = load;
++	}
++	
++	spin_unlock_irqrestore (&usb_ed_lock, flags);
+ 	return ed_ret; 
+ }
+ 
+ /*-------------------------------------------------------------------------*/
+-
++ 
+ /* request the removal of an endpoint
+  * put the ep on the rm_list and request a stop of the bulk or ctrl list 
+  * real removal is done at the next start frame (SF) hardware interrupt */
+-
++/* 
+ static void ep_rm_ed (struct usb_device * usb_dev, ed_t * ed)
+ {
+ 	unsigned long frame;
+@@ -1088,22 +1323,22 @@
+ 
+ 	if ((ed->state & ED_DEL) || (ed->state & ED_URB_DEL))
+ 		return;
+-
++	
+ 	ed->state = ED_DEL;
+-
+-	ed->hwINFO |=  cpu_to_le32(OHCI_ED_SKIP);
++	
++	ed->hwINFO |= cpu_to_le32(OHCI_ED_SKIP);
+ 
+ 	if (!ohci->disabled) {
+ 		switch (ed->type) {
+-			case PIPE_CONTROL: 
++			case PIPE_CONTROL: // stop control list
+ 				ohci->hc_control &= ~OHCI_CTRL_DMA_EN;
+ 		//		writel (ohci->hc_control, &ohci->regs->control);
+ 		//		WriteDw (ohci->hc_control,&ohci->regs->hostcontrol);
+-  				break;
+-			case PIPE_BULK: 
++				break;
++			case PIPE_BULK: // stop bulk list
+ 				ohci->hc_control &= ~OHCI_CTRL_DMA_EN;
+ 		//		writel (ohci->hc_control, &ohci->regs->control); 
+-		//                WriteDw (ohci->hc_control,&ohci->regs->hostcontrol);
++		//		WriteDw (ohci->hc_control,&ohci->regs->hostcontrol);
+ 				break;
+ 		}
+ 	}
+@@ -1112,9 +1347,7 @@
+ 	spin_lock_irqsave (&usb_ed_lock, flags);
+ 
+ 	frame = ReadDw (&ohci->regs->fmnumber);
+-#ifdef AHCI_VERBOSE_DEBUG
+-	printk("Frame No [R] = %08lx \n",frame);
+-#endif
++	DPRINTF("ep_rm_ed: Frame No [R] = %08lx \n",frame);
+ 	frame = (frame >>16) & 1;
+ 	ed->ed_rm_list = ohci->ed_rm_list[frame];
+ 	ohci->ed_rm_list[frame] = ed;
+@@ -1127,7 +1360,7 @@
+ 	spin_unlock_irqrestore (&usb_ed_lock, flags);
+ 
+ }
+-
++*/
+ /*-------------------------------------------------------------------------*
+  * TD handling functions
+  *-------------------------------------------------------------------------*/
+@@ -1137,127 +1370,74 @@
+ static void
+ td_fill_ahci (ohci_t * ohci, unsigned int info,
+ 	dma_addr_t data, int len,
+-	struct urb * urb, int tdflags)
++	struct urb * urb, int index)
+ {
+ 	volatile td_t * td;
+ 	urb_priv_t * urb_priv = urb->hcpriv;
+-	ed_t *ed = urb_priv->ed;
+-	unsigned int isi_fn;
+-///	__u32 temp;
+-
+-/*
++	
+ 	if (index >= urb_priv->length) {
+ 		err("internal OHCI error: TD index > length");
+ 		return;
+ 	}
+-*/
+-
++	
+ 	/* use this td as the next dummy */
+-///	td = (struct td *)urb_priv->ed->TD_Addr[index];
++	//MG: nakijken:
++	td = (struct td *)urb_priv->ed->TD_Addr[index];
+ 	
+-	if (ed->td_tail == NULL) {
+-		td = ed->td_head;
+-		isi_fn = le32_to_cpup(&td->hwINFO) & (TD_FN | TD_ISI);
+-	} else {
+-		td_t * td_new;
+-
+-		td = ed->td_tail;
+-		if (td->td_next == ed->td_head) {
+-			/* Alloc additional TD */
+-			td_new = td_alloc (ohci, SLAB_ATOMIC | GFP_DMA);
+-			if (!td_new) {
+-				printk("No memory!\n");		/* FIXME: return correct code */
+-				return;
+-			}
+-			td_new->td_next = td->td_next;
+-			td->td_next = (td_t *)td_new;
+-			td_new->hwNextTD = td->hwNextTD;
+-			td->hwNextTD = td_new->td_dma;
+-		}
+-		ed->td_tail = td->td_next;
+-		isi_fn = TD_ISI_SET(ed->int_period - 1) | (ed->last_iso & TD_FN);
+-	}
+-
+-	if ( td->hwINFO & TD_OWNER) {
+-		printk(" Error ~~~~~~!! \n");
++	if ( td->hwINFO & TD_OWNER)
++	{
++		printk(" td_fill_ahci: Error ~~~~~~!! \n");
+ 	}
+-
+-	td->ed = ed;
++	
++	td->ed = urb_priv->ed;
++	td->next_dl_td = NULL;
++	td->index = index;
+ 	td->urb = urb;
+ 	td->data_dma = data;
+-	td->flags = (__u8)tdflags;
+-	td->state = 1;
+-
++	
+ 	if (!len)
+ 		data = 0;
+-
+-	switch(td->ed->type) {
+-		case PIPE_INTERRUPT:
+-			info |= isi_fn;
+-			td->hwCBP = cpu_to_le32(data);
+-			break;
+-
+-		case PIPE_ISOCHRONOUS:
+-			info |= isi_fn & TD_FN;
+-			ed->last_iso += ed->int_period;
+-///			td->hwCBP = cpu_to_le32(data & 0xFFFFF000);	///???
+-			td->hwCBP = cpu_to_le32(data);
+-///			td->ed->last_iso = info & TD_FN;
+-			break;
+-		default:
+-/*
+-		if ( data & 0x0E000000) {  //decode over bit25
+-			printk("Decode over bit 25\n");
++	
++	//td->hwINFO = cpu_to_le32 (info);
++	if ((td->ed->type) == PIPE_ISOCHRONOUS) {
++		td->hwCBP = cpu_to_le32 (data & 0xFFFFF000);
++		td->ed->last_iso = info & 0xffff;
++	} else {
++		if ( data & 0x0E000000)  //decode over bit25
++		{
++			DPRINTF("Decode over bit 25\n");
+ 			td->ed->NeedCopy = 1;
+-///			td->data_dma = cpu_to_le32(td->ed->TD_Addr[3]);
+-			if(!td->dma_buf) {
+-				temp = (__u32)kmalloc(4096, GFP_DMA);
+-				if(!temp) {
+-					printk("DMA buffer alloc failed!\n");
+-					return;
+-				}
+-            			temp |= 0xA0000000;
+-            			memset((void *)temp,0,4096);
+-				td->dma_buf = temp;
+-				td->data_dma = temp;
+-			}
+-			td->hwCBP = cpu_to_le32(td->dma_buf);
+-			if ( info & TD_DP_OUT ) {
+-				memcpy((void *)td->dma_buf,urb->transfer_buffer,len);	
++			td->hwCBP = cpu_to_le32(td->ed->TD_Addr[3]);
++			td->data_dma = cpu_to_le32(td->ed->TD_Addr[3]);
++			if ( info & TD_DP_OUT )
++			{
++				memcpy((void *)td->ed->TD_Addr[3],urb->transfer_buffer,len);
+ 				td->ed->NeedCopy = 0;
+ 			}
+-		} else */ {
++		} else {
+ 			td->hwCBP = cpu_to_le32(data);
+ 			td->ed->NeedCopy = 0;
+ 		}
+ 	}
+-/*
+ 	if (data)
+ 	{
+ 		td->hwBufLen = cpu_to_le32(len&TD_BUFFLEN);
+-	}	
++	}
+ 	else
+ 	{
+ 		td->hwBufLen = 0;
+-        }
+-*/
+-	td->hwBufLen = cpu_to_le32((data? len&TD_BUFFLEN: 0) | (0 || (tdflags & TD_FLAG_LAST)? TD_INTENABLE: 0));
+-///	td->hwNextTD = td->td_dma + sizeof (*td);		/// ???
+-///	td->hwPSW [0] = cpu_to_le16 ((data & 0x0FFF) | 0xE000);	/// I don't know what it is
+-        td->hwINFO = cpu_to_le32(info | TD_OWNER);
+-
+-#ifdef  AHCI_VERBOSE_DEBUG
+-///	printk("Q. TD buff = %08lx   ED Head = %08lx  ED Tail = %08lx\n",(long unsigned)data,(long unsigned)urb_priv->ed->hwHeadP,(long unsigned)urb_priv->ed->hwTailP);
+-	printk("Q[%p]: TD buff = %08x   info = %08x buflen = %08x\n", td, data, td->hwINFO, td->hwBufLen);
+-#endif
+-
+-	if(tdflags & TD_FLAG_LAST) {
+-		/* Initiate transfer */
+-		if(td->td_next != NULL)
+-			urb_priv->ed->hwTailP = td->td_next->td_dma;
+ 	}
++	td->hwNextTD = td->td_dma + sizeof (*td);
++	td->hwPSW [0] = cpu_to_le16 ((data & 0x0FFF) | 0xE000);
++	td->hwINFO = cpu_to_le32(info);
++	
++	if (index == 0) //first TD
++		td->ed->TDHead = td->td_dma;
++	else
++		td->hwINFO = cpu_to_le32(info | TD_OWNER);
+ 
+-///	wmb();
++	/* append to queue */
++	DPRINTF("Q. TD buff = %08x   ED Head = %04x\n",(__u32) data,urb_priv->ed->hwHeadP);
+ }
+ 
+ /*-------------------------------------------------------------------------*/
+@@ -1270,139 +1450,130 @@
+ 	ohci_t * ohci = (ohci_t *) urb->dev->bus->hcpriv;
+ 	dma_addr_t data;
+ 	int data_len = urb->transfer_buffer_length;
+-///	int maxps = usb_maxpacket (urb->dev, urb->pipe, usb_pipeout (urb->pipe));
++	int maxps = usb_maxpacket (urb->dev, urb->pipe, usb_pipeout (urb->pipe));
+ 	int cnt = 0; 
+-	__u32 info = 0, info2 = 0;
+-  	unsigned int toggle = 0;
+-///  	volatile td_t  * td_pt;
+-
++	__u32 info = 0;
++	unsigned int toggle = 0;
++	volatile td_t * td_pt=0;
++	
++	DPRINTF("td_submit_urb_ahci\n");
++	
+ 	/* OHCI handles the DATA-toggles itself, we just use the USB-toggle bits for reseting */
+-  	if(usb_gettoggle(urb->dev, usb_pipeendpoint(urb->pipe), usb_pipeout(urb->pipe))) {
++	if(usb_gettoggle(urb->dev, usb_pipeendpoint(urb->pipe), usb_pipeout(urb->pipe))) {
+ 		toggle = TD_T_TOGGLE;
+ 	} else {
+ 		toggle = TD_T_DATA0;
+ 		usb_settoggle(urb->dev, usb_pipeendpoint(urb->pipe), usb_pipeout(urb->pipe), 1);
+ 	}
+-
+-
++	
+ 	urb_priv->td_cnt = 0;
+ 
+ 	if (data_len) {
+ 		data = pci_map_single (ohci->ohci_dev,
+-			urb->transfer_buffer, data_len,
+-			usb_pipeout (urb->pipe)? PCI_DMA_TODEVICE: PCI_DMA_FROMDEVICE
+-		);
+-		urb_priv->dma1 = data;
++		    urb->transfer_buffer, data_len,
++		    usb_pipeout (urb->pipe)
++				? PCI_DMA_TODEVICE
++				: PCI_DMA_FROMDEVICE
++			);
+ 	} else
+ 		data = 0;
+-
++	
+ 	switch (usb_pipetype (urb->pipe)) {
+ 		case PIPE_BULK:
+-			info = TD_CC | (usb_pipeout (urb->pipe)? TD_DP_OUT : TD_DP_IN);
++			info = TD_CC | (usb_pipeout (urb->pipe)? 
++				TD_DP_OUT : TD_DP_IN);
+ 			while(data_len > 4096) {
+-				td_fill_ahci (ohci, info | (cnt? TD_T_TOGGLE:toggle), data, 4096, urb, 0);
++				td_fill_ahci (ohci, info | (cnt? TD_T_TOGGLE:toggle), data, 4096, urb, cnt);
+ 				data += 4096; data_len -= 4096;
+ 				cnt++;
+ 			}
+-			info = TD_CC | (usb_pipeout (urb->pipe)? TD_DP_OUT : TD_DP_IN);
+-
++			info = TD_CC | (usb_pipeout (urb->pipe)?
++				TD_DP_OUT : TD_R | TD_DP_IN);
++			td_fill_ahci (ohci, info | (cnt? TD_T_TOGGLE:toggle), data, data_len, urb, cnt);
++			cnt++;
++			
+ 			/* If the transfer size is multiple of the pipe mtu,
+-			 * we may need an extra TD to create a empty frame */
+-			if (urb_priv->length > cnt+1) {
+-				td_fill_ahci (ohci, info | (cnt? TD_T_TOGGLE:toggle), data, data_len, urb, 0);
+-				cnt++;
+-				td_fill_ahci (ohci, info | (cnt? TD_T_TOGGLE:toggle), 0, 0, urb, TD_FLAG_LAST);
+-				cnt++;
+-			} else {
+-				td_fill_ahci (ohci, info | (cnt? TD_T_TOGGLE:toggle), data, data_len, urb, TD_FLAG_LAST);
++			 * we may need an extra TD to create a empty frame
++			 * Note : another way to check this condition is
++			 * to test if(urb_priv->length > cnt) - Jean II */
++			if ((urb->transfer_flags & USB_ZERO_PACKET) &&
++			    usb_pipeout (urb->pipe) &&
++			    (urb->transfer_buffer_length != 0) && 
++			    ((urb->transfer_buffer_length % maxps) == 0)) {
++				td_fill_ahci (ohci, info | (cnt? TD_T_TOGGLE:toggle), 0, 0, urb, cnt);
+ 				cnt++;
+ 			}
+-
+-///			if ( cnt >1 )
+-///				printk(" %%%%%%%%\n");
+-
+-///			if (!ohci->sleeping)		// always not sleeping
+-				///wmb();
+-
+-			//	writel (OHCI_BLF, &ohci->regs->cmdstatus); /* start bulk list */
+-///			        td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[cnt-1];
+-///			 	td_pt->hwBufLen |= cpu_to_le32(TD_INTENABLE);
+-///			 	(volatile td_t *)td_pt->hwNextTD = NULL;
+-///			 	td_pt->ed->InUse = 1;
+-///				td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[0];
+-			//	writel (OHCI_CLF, &ohci->regs->cmdstatus); /* start Control list */
+-			//	writel (2, &ohci->regs->hostcontrol); /* start Control list */
+-///				td_pt->hwINFO |= le32_to_cpu(TD_OWNER);
+-///				writel (6, &ohci->regs->hostcontrol); /* start Control list */
+-			//        WriteDw(OHCI_CTRL_OPER|OHCI_CTRL_DMA_EN,&ohci->regs->hostcontrol);
++			
++			if ( cnt >1 )
++				DPRINTF(" %%%%%%%%\n");
++			
++			if (!ohci->sleeping) {
++				td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[cnt-1];
++			}
++			td_pt->hwBufLen |= cpu_to_le32(TD_INTENABLE);
++			td_pt->hwNextTD = (volatile __u32) NULL;
++			td_pt->ed->InUse = 1;
++			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[0];
++			td_pt->hwINFO |= le32_to_cpu(TD_OWNER);
++			writel (6, &ohci->regs->hostcontrol); /* start Control list */
++			//WriteDw(OHCI_CTRL_OPER|OHCI_CTRL_DMA_EN,&ohci->regs->hostcontrol);
+ 			break;
+ 
+ 		case PIPE_INTERRUPT:
+-			info = TD_CC ///| TD_T_DATA0 ///toggle 
+-///			             | (ed->last_iso & TD_FN) 
+-///			             | TD_ISI_SET(ed->int_interval)
+-			             | (usb_pipeout (urb->pipe)? TD_DP_OUT : TD_DP_IN);
+-			td_fill_ahci (ohci, info, data, data_len, urb, TD_FLAG_LAST);
+-
+-///			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[cnt-1];
+-///			td_pt->hwBufLen |= cpu_to_le32(TD_INTENABLE);
+-///			(volatile td_t *)td_pt->hwNextTD = NULL; 	
+-///			td_pt->ed->InUse = 1;
+-///			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[0];
++			info = TD_CC | (usb_pipeout (urb->pipe)? 
++				TD_DP_OUT | toggle: TD_R | TD_DP_IN | toggle);
++			td_fill_ahci (ohci, info, data, data_len, urb, cnt++);
++			
++			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[cnt-1];
++			td_pt->hwBufLen |= cpu_to_le32(TD_INTENABLE);
++			td_pt->hwNextTD = (volatile __u32) NULL;
++			td_pt->ed->InUse = 1;
++			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[0];
+ 		//	writel (2, &ohci->regs->hostcontrol); /* start Control list */
+-///			td_pt->hwINFO |= le32_to_cpu(TD_OWNER);
+-///			writel (6, &ohci->regs->hostcontrol); /* start Control list */
++			td_pt->hwINFO |= le32_to_cpu(TD_OWNER);
++			writel (6, &ohci->regs->hostcontrol); /* start Control list */
+ 			break;
+-
++			
+ 		case PIPE_CONTROL:
+-		        info = TD_CC | TD_DP_SETUP | TD_T_DATA0;
+-			urb_priv->dma2 = pci_map_single (ohci->ohci_dev,
+-				    urb->setup_packet, 8, PCI_DMA_TODEVICE);
+-			td_fill_ahci (ohci, info, urb_priv->dma2, 8, urb, TD_FLAG_NOLEN);
++			info = TD_CC | TD_DP_SETUP | TD_T_DATA0;
++			td_fill_ahci (ohci, info,
++				pci_map_single (ohci->ohci_dev,
++					urb->setup_packet, 8,
++					PCI_DMA_TODEVICE),
++				8, urb, cnt++);
++			if (data_len > 0) {
++				info = usb_pipeout (urb->pipe)? 
++					TD_OWNER | TD_CC | TD_R | TD_DP_OUT | TD_T_DATA1 : TD_OWNER | TD_CC | TD_R | TD_DP_IN | TD_T_DATA1;
++				/* NOTE:  mishandles transfers >8K, some >4K */
++				td_fill_ahci (ohci, info, data, data_len, urb, cnt++);  
++			}
++			info = usb_pipeout (urb->pipe)? 
++				TD_OWNER | TD_CC | TD_DP_IN | TD_T_DATA1: TD_OWNER | TD_CC | TD_DP_OUT | TD_T_DATA1;
++			td_fill_ahci (ohci, info, data, 0, urb, cnt++);
+ 			
++			if (!ohci->sleeping) {
++				td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[cnt-1];
++			}
++			td_pt->hwBufLen |= cpu_to_le32(TD_INTENABLE);
++			td_pt->hwNextTD = (volatile __u32) NULL;
++			td_pt->ed->InUse = 1;
+ 			
+-			info = TD_CC | (usb_pipeout (urb->pipe)? TD_DP_OUT : TD_DP_IN);
+-			info2 = TD_CC | (usb_pipeout (urb->pipe)? TD_DP_IN: TD_DP_OUT);
++			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[0];
+ 			
+-			toggle = TD_T_DATA1;
+-			if (data_len > 0) {
+-/*
+-				while(data_len > maxps) {
+-					td_fill_ahci (ohci, info | toggle, data, maxps, urb, 0);
+-					data += maxps; data_len -= maxps;
+-					td_fill_ahci (ohci, info2 | TD_T_DATA1, 0, 0, urb, 0);
+-					toggle ^= TD_T_DATA1 ^ TD_T_DATA0;
+-				}
+-*/
+-				td_fill_ahci (ohci, info | toggle, data, data_len, urb, 0);
+-///				toggle ^= TD_T_DATA1 ^ TD_T_DATA0;
+-			}
+-			td_fill_ahci (ohci, info2 | toggle, 0, 0, urb, TD_FLAG_LAST);
+-
+-
+-///			if (!ohci->sleeping)		// always not sleeping
+-///			wmb();
+-///			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[cnt-1];
+-///			td_pt->hwBufLen |= cpu_to_le32(TD_INTENABLE);
+-///			(volatile td_t *)td_pt->hwNextTD = urb_priv->ed->hwTailP; /// NULL;
+-///			td_pt->ed->InUse = 1;
+-///			td_pt=(volatile td_t *)urb_priv->ed->TD_Addr[0];
+-
+-	//		writel (2, &ohci->regs->hostcontrol); /* start Control list */
+-///			td_pt->hwINFO |= le32_to_cpu(TD_OWNER);
+-///			writel (6, &ohci->regs->hostcontrol); /* start Control list */
++	//			writel (2, &ohci->regs->hostcontrol); /* start Control list */
++			td_pt->hwINFO |= le32_to_cpu(TD_OWNER);
++			writel (6, &ohci->regs->hostcontrol); /* start Control list */
+ 			break;
+ 
+ 		case PIPE_ISOCHRONOUS:
+-			info = TD_CC | TD_T_DATA0 | (usb_pipeout (urb->pipe)? TD_DP_OUT : TD_DP_IN);
++			DPRINTF("td_submit_urb_ahci: PIPE_ISOCHRONOUS: number_of_packets:%d\n", urb->number_of_packets);
+ 			for (cnt = 0; cnt < urb->number_of_packets; cnt++) {
+-				td_fill_ahci (ohci, info | ((urb->start_frame + cnt) & TD_FN), 
+-				  data + urb->iso_frame_desc[cnt].offset, 
+-				  urb->iso_frame_desc[cnt].length, urb, 
+-				  TD_FLAG_ISO | (cnt + 1 == urb->number_of_packets ? TD_FLAG_LAST: 0));
++				td_fill_ahci (ohci, TD_CC|TD_ISO | ((urb->start_frame + cnt) & 0xffff), 
++					data + urb->iso_frame_desc[cnt].offset, 
++					urb->iso_frame_desc[cnt].length, urb, cnt);
+ 			}
+ 			break;
+-	} 
++	}
+ 	if (urb_priv->length != cnt)
+ 		dbg("TD LENGTH %d != CNT %d", urb_priv->length, cnt);
+ }
+@@ -1417,64 +1588,66 @@
+ static void dl_transfer_length_ahci(td_t * td)
+ {
+ 	__u32 tdINFO, tdBUFFLEN, tdCBP, tdLastBP,tdCnt;
+-/// 	__u16 tdPSW;
+- 	struct urb * urb = td->urb;
+-/// 	urb_priv_t * urb_priv = urb->hcpriv;
++	__u16 tdPSW;
++	struct urb * urb = td->urb;
++	urb_priv_t * urb_priv = urb->hcpriv;
+ 	int dlen = 0;
+ 	int cc = 0;
+-
++	
+ 	tdINFO    = le32_to_cpup (&td->hwINFO);
+-  	tdBUFFLEN = le32_to_cpup (&td->hwBufLen) & 0xFFFF;
+-  	tdCBP     = le32_to_cpup (&td->hwCBP);
+-  	tdCnt     = le32_to_cpup (&td->hwBufLen) & 0xFFFF;
+-  	tdLastBP  = td->data_dma;
+-
+-///  	if (tdINFO & TD_ISO) {
+-	if (td->flags & TD_FLAG_ISO) {
+-/// 		tdPSW = le16_to_cpu (td->hwPSW[0]);
+-/// 		cc = (tdPSW >> 12) & 0xF;
+-///		if (cc < 0xE)  {
++	tdBUFFLEN = le32_to_cpup (&td->hwBufLen) & 0xFFFF;
++	tdCBP     = le32_to_cpup (&td->hwCBP);
++	tdCnt     = le32_to_cpup (&td->hwBufLen) & 0xFFFF;
++	tdLastBP  = td->data_dma;
++	
++	DPRINTF("dl_transfer_length_ahci buflen=%u lastbp=%u\n",tdBUFFLEN, tdLastBP);
++	
++	if (tdINFO & TD_ISO) {
++		tdPSW = le16_to_cpu (td->hwPSW[0]);
++		cc = (tdPSW >> 12) & 0xF;
++		if (cc < 0xE)  {
+ 			if (usb_pipeout(urb->pipe)) {
+ 				dlen = urb->iso_frame_desc[td->index].length;
+ 			} else {
+-///				dlen = tdPSW & 0x3ff;
+-				dlen = (tdCBP-tdLastBP); //+tdCnt);
++				dlen = tdPSW & 0x3ff;
+ 			}
+ 			urb->actual_length += dlen;
+ 			urb->iso_frame_desc[td->index].actual_length = dlen;
+ 			if (!(urb->transfer_flags & USB_DISABLE_SPD) && (cc == TD_DATAUNDERRUN))
+ 				cc = TD_CC_NOERROR;
+-
++			
+ 			urb->iso_frame_desc[td->index].status = cc_to_error[cc];
+-///		}
+-	} else 	{ /* BULK, INT, CONTROL DATA */
+-///		if (!(usb_pipetype (urb->pipe) == PIPE_CONTROL && 
+-///				((td->index == 0) || (td->index == urb_priv->length - 1)))) {
+-		if ((td->flags & TD_FLAG_NOLEN) == 0) {
+-///			printk("%08x+%08x ", tdCBP-tdLastBP, tdCnt);
++		}
++	} else { /* BULK, INT, CONTROL DATA */
++		if (!(usb_pipetype (urb->pipe) == PIPE_CONTROL && 
++				((td->index == 0) || (td->index == urb_priv->length - 1))))
++		{
++//MG: nakijken
+ 			if (td->hwCBP == 0)
+ 				urb->actual_length += 0;
+-  			else
++			else
+ 				urb->actual_length += (tdCBP-tdLastBP+tdCnt);
+-  		}
+-  	}
++		}
++	}
+ }
+ 
+ /* handle an urb that is being unlinked */
+ /*
+-static void dl_del_urb (urb_t * urb)
++static void dl_del_urb (struct urb * urb)
+ {
+ 	wait_queue_head_t * wait_head = ((urb_priv_t *)(urb->hcpriv))->wait;
+-
++	
+ 	urb_rm_priv_locked_ahci (urb);
+-
++	
+ 	if (urb->transfer_flags & USB_ASYNC_UNLINK) {
+ 		urb->status = -ECONNRESET;
+ 		if (urb->complete)
+ 			urb->complete (urb);
+ 	} else {
+ 		urb->status = -ENOENT;
+-
++*/
++		/* unblock sohci_unlink_urb */
++/*
+ 		if (wait_head)
+ 			wake_up (wait_head);
+ 	}
+@@ -1487,88 +1660,62 @@
+ /* there are some pending requests to remove 
+  * - some of the eds (if ed->state & ED_DEL (set by sahci_free_dev)
+  * - some URBs/TDs if urb_priv->state == URB_DEL */
+-
++/* 
+ static void dl_del_list (ohci_t  * ohci, unsigned int frame)
+ {
+ 	unsigned long flags;
+ 	ed_t * ed;
+-	td_t * td;
+-	td_t * tdn;
+-	__u32 edINFO;
+-	__u32 tdHeadP, tdTailP;
+-/*
+ 	__u32 temp32;
++	__u32 edINFO;
+ 	td_t  * tdHeadP = NULL, * tdTailP;
+ 	__u32 * td_p;
+ 	int ctrl = 0, bulk = 0;
+-*/
+-
++	
+ 	spin_lock_irqsave (&usb_ed_lock, flags);
+-
+-	for (ed = ohci->ed_rm_list[frame]; ed != NULL; ed = ed->ed_rm_list) {
+-/*
++	
++	for (ed = ohci->ed_rm_list[frame]; ed != NULL; ed = ed->ed_rm_list)
++	{
+ 		temp32 = (ed->hwTailP) & 0xfffffff0;
+-
++		
+ 		tdTailP = ed->TDTail;
+ 		tdHeadP = ed->TDHead;
+-*/
+ 		edINFO = le32_to_cpup (&ed->hwINFO);
+-///		td_p = &ed->hwHeadP;
+-
++		td_p = &ed->hwHeadP;
++		
+ 		if (ed->state & ED_DEL) {
+ 			struct ohci_device * dev = usb_to_ahci (ohci->dev[edINFO & 0x7F]);
+-
++			td_free (ohci, tdTailP); 
+ 			ed->hwINFO = cpu_to_le32 (OHCI_ED_SKIP); 
+ 			ed->state = ED_NEW;
+-
+-			for (td = ed->td_head; td != NULL ;td = tdn) {
+-			  tdn = td->td_next;
+-			  td_free(ohci, td);
+-			  if (tdn == ed->td_head)		/* Loop complete */
+-			    break;
+-			}
+-
+-#ifdef AHCI_VERBOSE_DEBUG
+-			printk("2 ED[%p] count=%d\n", ed, dev->ed_cnt);
+-#endif
+-///			hash_free_ed(ohci, ed);
+-
++			printk("2 ED[%08lx]\n",ed);
++			hash_free_ed(ohci, ed);
++			
+ 			if (!--dev->ed_cnt) {
+ 				wait_queue_head_t *wait_head = dev->wait;
+-#ifdef AHCI_VERBOSE_DEBUG
+-				printk("Last ED deleted, DEV=%p\n", dev);
+-#endif
++				DPRINTF("Last ED deleted, DEV=%p\n", dev);
+ 				dev->wait = 0;
+ 				if (wait_head)
+-    					wake_up (wait_head);
++					wake_up (wait_head);
+ 			}
+ 
+ 		} else {
+ 			ed->state &= ~ED_URB_DEL;
+-			tdHeadP = ed->hwHeadP & 0xFFFFFFF0;
+-			tdTailP = ed->hwTailP & 0xFFFFFFF0;
+-
+-#ifdef AHCI_VERBOSE_DEBUG
+-	 		printk("3 TD [%08x]->[%08x]\n", tdHeadP, tdTailP);
+-#endif
+-//			tdHeadP = dma_to_td (ohci, le32_to_cpup (&ed->hwHeadP) & 0xfffffff0);
+-
+-			if ( tdHeadP == tdTailP) {
++			tdHeadP = dma_to_td (ohci, le32_to_cpup (&ed->hwHeadP) & 0xfffffff0);
++			
++			DPRINTF("3 TD [%08x]->[%08x]\n", tdHeadP, tdTailP);
++			if (tdHeadP == tdTailP) {
+ 				if (ed->state == ED_OPER)
+ 					ep_unlink(ohci, ed);
+-/*
+ 				td_free (ohci, tdTailP);
+ 				ed->hwINFO = cpu_to_le32 (OHCI_ED_SKIP);
+ 				ed->state = ED_NEW;
+ 				printk("4 ED [%08lx]\n",ed);
+ 				hash_free_ed(ohci, ed);
+ 				--(usb_to_ahci (ohci->dev[edINFO & 0x7F]))->ed_cnt;
+-*/
+ 			} else
+-   	 			ed->hwINFO &= ~cpu_to_le32 (OHCI_ED_SKIP);
++				ed->hwINFO &= ~cpu_to_le32 (OHCI_ED_SKIP);
+ 		}
+-
+-/*
++		
+ 		switch (ed->type) {
+ 			case PIPE_CONTROL:
+ 				ctrl = 1;
+@@ -1577,9 +1724,9 @@
+ 				bulk = 1;
+ 				break;
+ 		}
+-*/		
+ 	}
+-   	
++*/	
++	/* maybe reenable control and bulk lists */ 
+ /*
+ 	if (!ohci->disabled) {
+ 		if (!ohci->ed_rm_list[!frame] && !ohci->sleeping) {
+@@ -1590,81 +1737,63 @@
+ 	//		writel (ohci->hc_control, &ohci->regs->control);   
+ 		}
+ 	}
+-*/
+-   	ohci->ed_rm_list[frame] = NULL;
+-   	spin_unlock_irqrestore (&usb_ed_lock, flags);
++	
++	ohci->ed_rm_list[frame] = NULL;
++	spin_unlock_irqrestore (&usb_ed_lock, flags);
+ }
+ 
+-  		
++*/
++
+ /*-------------------------------------------------------------------------*/
+ 
+ /* td done list */
+ 
+-static void dl_done_list (ohci_t * ohci, ed_t * ed)
++static void dl_done_list (ohci_t * ohci, td_t * td_list)
+ {
++	ed_t * ed = NULL;
+ 	int cc = 0;
+-	int head_reached = 0;
+-	td_t * td = ed->td_head;
+-	struct urb * urb;
+-	urb_priv_t * urb_priv;
+- 	__u32 tdINFO;
+-	__u32 edhead = ed->hwHeadP & 0xFFFFFFF0;
+-
+-#ifdef  AHCI_VERBOSE_DEBUG
+-	printk("ED HEAD -> TD INFO: %08lx\n", le32_to_cpup(&td->hwINFO));
+-#endif
+-
+-  	while (td != ed->td_tail && td->state) { /// && td->td_dma != edhead) {
+-  		tdINFO = le32_to_cpup (&td->hwINFO);
+-
+-		if(tdINFO & TD_OWNER)
+-			break;
+-
+-  		urb = td->urb;
+-  		urb_priv = urb->hcpriv;
+-
+-   		dl_transfer_length_ahci(td);
+-
+-#ifdef  AHCI_VERBOSE_DEBUG
+-		printk("TD [%p] DONE: %08lx, LEN: %08lx, NEXT: %08lx\n", td, (unsigned long)tdINFO, (unsigned long)urb->actual_length, (unsigned long)td->hwNextTD);
+-#endif
+-		td->state = 0;
+-
+- 		if ( ed->NeedCopy ) {
+- 			ed->NeedCopy = 0;
+- 			memcpy(urb->transfer_buffer,(void *)td->dma_buf,urb->actual_length);
+- 		}
+-
+-  		/* error code of transfer */
+-  		cc = TD_CC_GET (tdINFO);
+-  		if (cc == TD_CC_STALL)
++	struct urb * urb = NULL;
++	urb_priv_t * urb_priv= NULL;
++	__u32 tdINFO = 0;
++	unsigned long flags=0;
++	
++	DPRINTF("dl_done_list\n");
++	
++	while (td_list)
++	{
++		urb = td_list->urb;
++		urb_priv = urb->hcpriv;
++		tdINFO = le32_to_cpup (&td_list->hwINFO);
++		
++		ed = td_list->ed;
++		
++		dl_transfer_length_ahci(td_list);
++		
++		if ( ed->NeedCopy )
++		{
++			ed->NeedCopy = 0;
++			memcpy(urb->transfer_buffer,(void *)ed->TD_Addr[3],urb->actual_length);
++			DPRINTF("Copied into buffer: %u bytes\n", urb->actual_length);
++		}
++		
++		/* error code of transfer */
++		cc = TD_CC_GET (tdINFO);
++		if (cc == TD_CC_STALL)
+ 			usb_endpoint_halt(urb->dev,
+ 				usb_pipeendpoint(urb->pipe),
+ 				usb_pipeout(urb->pipe));
+-
++		
+ 		if (cc == TD_DATAUNDERRUN)
+ 			cc = TD_CC_NOERROR;
+-  		urb->status = cc_to_error[cc];
+-
+-		if (td->flags & TD_FLAG_LAST) {
+-#ifdef  AHCI_VERBOSE_DEBUG
+-			printk("CC status = %x  ED HEAD=%p\n",cc, td->td_next);
+-#endif
+-			sahci_return_urb (ohci, urb);
+-///			ed->td_head = td->td_next;
+-		}
+-
+-		if (td->td_dma == edhead) {
+-///			head_reached = 1;
+-///			ed->td_head = td;
+-			break;
+-		}
+-
+-		td = td->td_next;
+-  	}
+-
+-///	if(td)
+-	ed->td_head = td;
++		DPRINTF("CC status = %x \n",cc);
++		urb->status = cc_to_error[cc];
++		spin_unlock_irqrestore (&usb_ed_lock, flags);
++		if ( td_list ->hwNextTD)
++			td_list = dma_to_td(ohci,td_list->hwNextTD);
++		else 
++			td_list = NULL;
++	}
++	sahci_return_urb (ohci, urb);
+ }
+ 
+ 
+@@ -1688,9 +1817,9 @@
+ 	0x00,       /*  __u16 idVendor; */
+ 	0x00,
+ 	0x00,       /*  __u16 idProduct; */
+- 	0x00,
++	0x00,
+ 	0x00,       /*  __u16 bcdDevice; */
+- 	0x00,
++	0x00,
+ 	0x00,       /*  __u8  iManufacturer; */
+ 	0x02,       /*  __u8  iProduct; */
+ 	0x01,       /*  __u8  iSerialNumber; */
+@@ -1709,9 +1838,9 @@
+ 	0x01,       /*  __u8  bConfigurationValue; */
+ 	0x00,       /*  __u8  iConfiguration; */
+ 	0x40,       /*  __u8  bmAttributes; 
+-                 Bit 7: Bus-powered, 6: Self-powered, 5 Remote-wakwup, 4..0: resvd */
++	                Bit 7: Bus-powered, 6: Self-powered, 5 Remote-wakwup, 4..0: resvd */
+ 	0x00,       /*  __u8  MaxPower; */
+-      
++	
+ 	/* interface */	  
+ 	0x09,       /*  __u8  if_bLength; */
+ 	0x04,       /*  __u8  if_bDescriptorType; Interface */
+@@ -1722,14 +1851,14 @@
+ 	0x00,       /*  __u8  if_bInterfaceSubClass; */
+ 	0x00,       /*  __u8  if_bInterfaceProtocol; */
+ 	0x00,       /*  __u8  if_iInterface; */
+-     
++	
+ 	/* endpoint */
+ 	0x07,       /*  __u8  ep_bLength; */
+ 	0x05,       /*  __u8  ep_bDescriptorType; Endpoint */
+ 	0x81,       /*  __u8  ep_bEndpointAddress; IN Endpoint 1 */
+- 	0x03,       /*  __u8  ep_bmAttributes; Interrupt */
+- 	0x02,       /*  __u16 ep_wMaxPacketSize; ((MAX_ROOT_PORTS + 1) / 8 */
+- 	0x00,
++	0x03,       /*  __u8  ep_bmAttributes; Interrupt */
++	0x02,       /*  __u16 ep_wMaxPacketSize; ((MAX_ROOT_PORTS + 1) / 8 */
++	0x00,
+ 	0xff        /*  __u8  ep_bInterval; 255 ms */
+ };
+ 
+@@ -1739,30 +1868,29 @@
+ /*-------------------------------------------------------------------------*/
+ 
+ /* prepare Interrupt pipe data; HUB INTERRUPT ENDPOINT */ 
+- 
++
+ static int ahci_rh_send_irq (ohci_t * ohci, void * rh_data, int rh_len)
+ {
+ 	int num_ports;
+ 	int i;
+ 	int ret;
+ 	int len;
+-
++	
+ 	__u8 data[8];
+-
+-
+-	num_ports = ReadDw (&ohci->regs->rhdescriptor) & RH_NDP; 
++	
++	num_ports = (roothub_status(ohci) & RH_NDP); 
+ 	if (num_ports > MAX_ROOT_PORTS) {
+-	//	err ("bogus NDP=%d for OHCI usb-%s", num_ports,
+-	//		ohci->ohci_dev->slot_name);
++		err ("bogus NDP=%d for AHCI usb-%s", num_ports,
++			ohci->ohci_dev->slot_name);
+ 		err ("rereads as NDP=%d",
+ 			ReadDw (&ohci->regs->rhdescriptor) & RH_NDP);
+-		
++		/* retry later; "should not happen" */
+ 		return 0;
+ 	}
+-	*(__u8 *) data = (ReadDw (&ohci->regs->rhdescriptor) & (RH_LPSC | RH_OCIC))
++	*(__u8 *) data = (roothub_status(ohci) & (RH_LPSC | RH_OCIC))
+ 		? 1: 0;
+ 	ret = *(__u8 *) data;
+-
++//MG wat moet die roothub_portstatus hier?	
+ 	for ( i = 0; i < num_ports; i++) {
+ 		*(__u8 *) (data + (i + 1) / 8) |= 
+ 			((roothub_portstatus (ohci, i) &
+@@ -1771,11 +1899,11 @@
+ 		ret += *(__u8 *) (data + (i + 1) / 8);
+ 	}
+ 	len = i/8 + 1;
+-  
++	
+ 	if (ret > 0) { 
+ 		memcpy(rh_data, data,
+ 		       min_t(unsigned int, len,
+-			   min_t(unsigned int, rh_len, sizeof(data))));
++		       min_t(unsigned int, rh_len, sizeof(data))));
+ 		return len;
+ 	}
+ 	
+@@ -1792,22 +1920,21 @@
+ 
+ 	struct urb * urb = (struct urb *) ptr;
+ 	ohci_t * ohci = urb->dev->bus->hcpriv;
+-
++	
+ 	if (ohci->disabled)
+ 		return;
+-
++	
+ 	/* ignore timers firing during PM suspend, etc */
+-
+-
+-	if(ohci->rh.send) { 
++	if(ohci->rh.send) {
+ 		len = ahci_rh_send_irq (ohci, urb->transfer_buffer, urb->transfer_buffer_length);
+ 		if (len > 0) {
+ 			urb->actual_length = len;
++			DPRINTF("RET-t(rh) urb=%p len=%i\n",urb,len);
+ 			if (urb->complete)
+ 				urb->complete (urb);
+ 		}
+ 	}
+- 
++	
+ 	ahci_rh_init_int_timer (urb);
+ }
+ 
+@@ -1818,7 +1945,9 @@
+ static int ahci_rh_init_int_timer (struct urb * urb) 
+ {
+ 	ohci_t * ohci = urb->dev->bus->hcpriv;
+-
++	
++	//DPRINTF("@");
++	
+ 	ohci->rh.interval = urb->interval;
+ 	init_timer (&ohci->rh.rh_int_timer);
+ 	ohci->rh.rh_int_timer.function = ahci_rh_int_timer_do;
+@@ -1850,15 +1979,16 @@
+ 	int leni = urb->transfer_buffer_length;
+ 	int len = 0;
+ 	int status = TD_CC_NOERROR;
+-		
++	
+ 	__u32 datab[4];
+ 	__u8  * data_buf = (__u8 *) datab;
+ 	
+- 	__u16 bmRType_bReq;
++	__u16 bmRType_bReq;
+ 	__u16 wValue; 
+ 	__u16 wIndex;
+ 	__u16 wLength;
+-
++	
++	
+ 	if (usb_pipeint(pipe)) {
+ 		ohci->rh.urb =  urb;
+ 		ohci->rh.send = 1;
+@@ -1866,17 +1996,18 @@
+ 		ahci_rh_init_int_timer(urb);
+ 		urb->status = cc_to_error [TD_CC_NOERROR];
+ 		
++		DPRINTF("ahci_rh_submit_urb pipeint (urb:%p,pipe:0x%08x)\n", urb,pipe);
++		
+ 		return 0;
+ 	}
+-
++	
+ 	bmRType_bReq  = cmd->bRequestType | (cmd->bRequest << 8);
+ 	wValue        = le16_to_cpu (cmd->wValue);
+ 	wIndex        = le16_to_cpu (cmd->wIndex);
+ 	wLength       = le16_to_cpu (cmd->wLength);
+-
+-#ifdef  AHCI_VERBOSE_DEBUG
+-	printk("(%04X %04X %04X %04X)\n",bmRType_bReq,wValue,wIndex,wLength);
+-#endif
++	
++	DPRINTF("(req:%04X val:%04X idx:%04X len:%04X) ",bmRType_bReq,wValue,wIndex,wLength);
++	
+ 	switch (bmRType_bReq) {
+ 	/* Request Destination:
+ 	   without flags: Device, 
+@@ -1885,31 +2016,37 @@
+ 	   RH_CLASS means HUB here, 
+ 	   RH_OTHER | RH_CLASS  almost ever means HUB_PORT here 
+ 	*/
+-  
+-		case RH_GET_STATUS: 				 		
+-				*(__u16 *) data_buf = cpu_to_le16 (1); OK (2);
+-		case RH_GET_STATUS | RH_INTERFACE: 	 		
+-				*(__u16 *) data_buf = cpu_to_le16 (0); OK (2);
+-		case RH_GET_STATUS | RH_ENDPOINT:	 		
+-				*(__u16 *) data_buf = cpu_to_le16 (0); OK (2);   
+-		case RH_GET_STATUS | RH_CLASS: 				
+-				*(__u32 *) data_buf = cpu_to_le32 (
+-					RD_RH_STAT & ~(RH_HS_CRWE | RH_HS_DRWE));
+-				OK (4);
+-		case RH_GET_STATUS | RH_OTHER | RH_CLASS: 	
+-		 //               if (RD_RH_PORTSTAT == 0)
+-				*(__u32 *) data_buf = cpu_to_le32(RD_RH_PORTSTAT);
+-		//		mdelay(1);	
+-			//	WR_RH_PORTSTAT(RD_RH_PORTSTAT);	
+-			        OK (4);
+-
+-		case RH_CLEAR_FEATURE | RH_ENDPOINT:  
++	
++		case RH_GET_STATUS:
++			DPRINTF("RH_GET_STATUS\n");
++			*(__u16 *) data_buf = cpu_to_le16 (1);
++			OK (2);
++		case RH_GET_STATUS | RH_INTERFACE:
++			DPRINTF("RH_GET_STATUS | RH_INTERFACE\n");
++			*(__u16 *) data_buf = cpu_to_le16 (0);
++			OK (2);
++		case RH_GET_STATUS | RH_ENDPOINT:
++			DPRINTF("RH_GET_STATUS | RH_ENDPOINT\n");
++			*(__u16 *) data_buf = cpu_to_le16 (0);
++			OK (2);
++		case RH_GET_STATUS | RH_CLASS:
++			DPRINTF("RH_GET_STATUS | RH_CLASS\n");
++			*(__u32 *) data_buf = cpu_to_le32 (RD_RH_STAT & ~(RH_HS_CRWE | RH_HS_DRWE));
++			OK (4);
++		case RH_GET_STATUS | RH_OTHER | RH_CLASS:
++			DPRINTF("RH_GET_STATUS | RH_OTHER | RH_CLASS\n");
++			*(__u32 *) data_buf = cpu_to_le32(RD_RH_PORTSTAT);
++			OK (4);
++		
++		case RH_CLEAR_FEATURE | RH_ENDPOINT:
++			DPRINTF("RH_CLEAR_FEATURE | RH_ENDPOINT\n");
+ 			switch (wValue) {
+ 				case (RH_ENDPOINT_STALL): OK (0);
+ 			}
+ 			break;
+-
++		
+ 		case RH_CLEAR_FEATURE | RH_CLASS:
++			DPRINTF("RH_CLEAR_FEATURE | RH_CLASS\n");
+ 			switch (wValue) {
+ 				case RH_C_HUB_LOCAL_POWER:
+ 					OK(0);
+@@ -1919,53 +2056,58 @@
+ 			break;
+ 		
+ 		case RH_CLEAR_FEATURE | RH_OTHER | RH_CLASS:
++			DPRINTF("RH_CLEAR_FEATURE | RH_OTHER | RH_CLASS\n");
+ 			switch (wValue) {
+-				case (RH_PORT_ENABLE): 			
++				case (RH_PORT_ENABLE):
+ 						WR_RH_PORTSTAT (RH_PS_CCS ); OK (0);
+-				case (RH_PORT_SUSPEND):			
++				case (RH_PORT_SUSPEND):
+ 						WR_RH_PORTSTAT (RH_PS_POCI); OK (0);
+-				case (RH_PORT_POWER):			
++				case (RH_PORT_POWER):
+ 						WR_RH_PORTSTAT (RH_PS_LSDA); OK (0);
+-				case (RH_C_PORT_CONNECTION):	
++				case (RH_C_PORT_CONNECTION):
+ 						WR_RH_PORTSTAT (RH_PS_CSC ); OK (0);
+-				case (RH_C_PORT_ENABLE):		
++				case (RH_C_PORT_ENABLE):
+ 						WR_RH_PORTSTAT (RH_PS_PESC); OK (0);
+-				case (RH_C_PORT_SUSPEND):		
++				case (RH_C_PORT_SUSPEND):
+ 						WR_RH_PORTSTAT (RH_PS_PSSC); OK (0);
+-				case (RH_C_PORT_OVER_CURRENT):	
++				case (RH_C_PORT_OVER_CURRENT):
+ 						WR_RH_PORTSTAT (RH_PS_OCIC); OK (0);
+-				case (RH_C_PORT_RESET):			
++				case (RH_C_PORT_RESET):
+ 						WR_RH_PORTSTAT (RH_PS_PRSC); OK (0); 
+ 			}
+ 			break;
+- 
++		
+ 		case RH_SET_FEATURE | RH_OTHER | RH_CLASS:
++			DPRINTF("RH_SET_FEATURE | RH_OTHER | RH_CLASS\n");
+ 			switch (wValue) {
+-				case (RH_PORT_SUSPEND):			
++				case (RH_PORT_SUSPEND):
+ 						WR_RH_PORTSTAT (RH_PS_PSS ); OK (0); 
+ 				case (RH_PORT_RESET): /* BUG IN HUP CODE *********/
+ 						if (RD_RH_PORTSTAT & RH_PS_CCS)
+-						   {
+-						      WR_RH_PORTSTAT (RH_PS_PRS | RH_PS_CSC);
+-						//    mdelay(1000);
+-						      mdelay(10);	
+-					    	      WR_RH_PORTSTAT (RH_PS_PES| RH_PS_CSC);
+-						      mdelay(100);
+-						      WriteDw(2,&ohci->regs->hostcontrol);
+-						   }
++						{
++							WR_RH_PORTSTAT (RH_PS_PRS | RH_PS_CSC);
++							//mdelay(1000);
++							mdelay(10);	
++							WR_RH_PORTSTAT (RH_PS_PES| RH_PS_CSC);
++							mdelay(100);
++							WriteDw(2,&ohci->regs->hostcontrol);
++						}
+ 						OK (0);
+-				case (RH_PORT_POWER):			
++				case (RH_PORT_POWER):
+ 						WR_RH_PORTSTAT (RH_PS_PPS ); OK (0); 
+ 				case (RH_PORT_ENABLE): /* BUG IN HUP CODE *********/
+ 						if (RD_RH_PORTSTAT & RH_PS_CCS)
+-						    WR_RH_PORTSTAT (RH_PS_PES );
++							WR_RH_PORTSTAT (RH_PS_PES );
+ 						OK (0);
+ 			}
+ 			break;
+-
+-		case RH_SET_ADDRESS: ohci->rh.devnum = wValue; OK(0);
+-
++		
++		case RH_SET_ADDRESS:
++			DPRINTF("RH_SET_ADDRESS\n");
++			ohci->rh.devnum = wValue;
++			OK(0);
+ 		case RH_GET_DESCRIPTOR:
++			DPRINTF("RH_GET_DESCRIPTOR\n");
+ 			switch ((wValue & 0xff00) >> 8) {
+ 				case (0x01): /* device descriptor */
+ 					len = min_t(unsigned int,
+@@ -1983,7 +2125,7 @@
+ 					data_buf = root_hub_config_des; OK(len);
+ 				case (0x03): /* string descriptors */
+ 					len = usb_root_hub_string (wValue & 0xff,
+-						(int)(long) ohci->regs, "OHCI",
++						(int)(long) ohci->regs, "AHCI",
+ 						data, wLength);
+ 					if (len > 0) {
+ 						data_buf = data;
+@@ -1996,41 +2138,46 @@
+ 			break;
+ 		
+ 		case RH_GET_DESCRIPTOR | RH_CLASS:
+-		    {
+-			    __u32 temp = ReadDw (&ohci->regs->rhdescriptor) ;
+-
+-			    data_buf [0] = 9;		// min length;
+-			    data_buf [1] = 0x29;
+-			    data_buf [2] = temp & RH_NDP;
+-			    data_buf [3] = 0;
+-			    if (temp & RH_PSM) 	/* per-port power switching? */
++		{
++			__u32 temp = ReadDw (&ohci->regs->rhdescriptor) ;
++			
++			DPRINTF("RH_GET_DESCRIPTOR | RH_CLASS\n");
++			data_buf [0] = 9;		// min length;
++			data_buf [1] = 0x29;
++			data_buf [2] = temp & RH_NDP;
++			data_buf [3] = 0;
++			if (temp & RH_PSM) 	/* per-port power switching? */
+ 				data_buf [3] |= 0x1;
+-			    if (temp & RH_NOCP)	/* no overcurrent reporting? */
++			if (temp & RH_NOCP)	/* no overcurrent reporting? */
+ 				data_buf [3] |= 0x10;
+-			  //  else if (temp & RH_OCPM)	/* per-port overcurrent reporting? */
+-			  //	data_buf [3] |= 0x8;
++			//else if (temp & RH_OCPM)	/* per-port overcurrent reporting? */
++			//	data_buf [3] |= 0x8;
+ 
+-			    datab [1] = 0;
+-			 //   data_buf [5] = (temp & RH_A_POTPGT) >> 24;
+-			 //    temp = roothub_b (ohci);
+-			 //   data_buf [7] = temp & RH_B_DR;
+-			 //   if (data_buf [2] < 7) {
++			datab [1] = 0;
++			//data_buf [5] = (temp & RH_A_POTPGT) >> 24;
++			//temp = roothub_b (ohci);
++			//data_buf [7] = temp & RH_B_DR;
++			//if (data_buf [2] < 7) {
+ 				data_buf [8] = 0xff;
+-			 //   } else {
++			//} else {
+ 			//	data_buf [0] += 2;
+ 			//	data_buf [8] = (temp & RH_B_DR) >> 8;
+ 			//	data_buf [10] = data_buf [9] = 0xff;
+-			//    }
++			//}
+ 				
+-			    len = min_t(unsigned int, leni,
+-				      min_t(unsigned int, data_buf [0], wLength));
+-			    OK (len);
+-			}
+- 
+-		case RH_GET_CONFIGURATION: 	*(__u8 *) data_buf = 0x01; OK (1);
+-
+-		case RH_SET_CONFIGURATION: /*	WR_RH_STAT (0x10000); */ OK (0);
+-
++			len = min_t(unsigned int, leni,
++			      min_t(unsigned int, data_buf [0], wLength));
++			OK (len);
++		}
++		
++		case RH_GET_CONFIGURATION:
++			DPRINTF("RH_GET_CONFIGURATION\n");
++			*(__u8 *) data_buf = 0x01;
++			OK (1);
++		case RH_SET_CONFIGURATION:
++			DPRINTF("RH_SET_CONFIGURATION\n");
++			/* WR_RH_STAT (0x10000); */
++			OK (0);
+ 		default: 
+ 			dbg ("unsupported root hub command");
+ 			status = TD_CC_STALL;
+@@ -2049,15 +2196,15 @@
+ #endif
+ 	
+ 	if (data != data_buf)
+-	    memcpy (data, data_buf, len);
+-  	urb->actual_length = len;
++		memcpy (data, data_buf, len);
++	urb->actual_length = len;
+ 	urb->status = cc_to_error [status];
+ 	
+ 	urb->hcpriv = NULL;
+ 	usb_dec_dev_use (usb_dev);
+ 	urb->dev = NULL;
+ 	if (urb->complete)
+-	    	urb->complete (urb);
++		urb->complete (urb);
+ 	return 0;
+ }
+ 
+@@ -2066,12 +2213,14 @@
+ static int ahci_rh_unlink_urb (struct urb * urb)
+ {
+ 	ohci_t * ohci = urb->dev->bus->hcpriv;
+- 
++	
++	DPRINTF("ahci_rh_unlink_urb\n");
++	
+ 	if (ohci->rh.urb == urb) {
+ 		ohci->rh.send = 0;
+ 		del_timer (&ohci->rh.rh_int_timer);
+ 		ohci->rh.urb = NULL;
+-
++		
+ 		urb->hcpriv = NULL;
+ 		usb_dec_dev_use(urb->dev);
+ 		urb->dev = NULL;
+@@ -2084,7 +2233,7 @@
+ 	}
+ 	return 0;
+ }
+- 
++
+ /*-------------------------------------------------------------------------*
+  * HC functions
+  *-------------------------------------------------------------------------*/
+@@ -2095,12 +2244,11 @@
+ {
+ 	int timeout = 30;
+ //	int smm_timeout = 50; /* 0,5 sec */
+-
++	
++	DPRINTF("hc_reset_ahci\n");
++	
++	
+ 	WriteDw (0, &ohci->regs->intrenable);
+-
+-
+-
+-
+ 	mdelay(10);
+ 	WriteDw (OHCI_CTRL_SWRESET,  &ohci->regs->control);
+ 	while ((ReadDw (&ohci->regs->control) & OHCI_CTRL_SWRESET) != 0) {
+@@ -2115,57 +2263,58 @@
+ 
+ /*-------------------------------------------------------------------------*/
+ 
+-/* Start an OHCI controller, set the BUS operational
++/* Start an AHCI controller, set the BUS operational
+  * enable interrupts 
+  * connect the virtual root hub */
+ 
+ static int hc_start_ahci (ohci_t * ohci)
+ {
+-  	__u32 mask;
+-  	unsigned int fminterval;
+-  	struct usb_device  * usb_dev;
++	__u32 mask;
++	unsigned int fminterval;
++	struct usb_device  * usb_dev;
+ 	struct ohci_device * dev;
+ 	
++	DPRINTF("hc_start_ahci\n");
++	
+ 	ohci->disabled = 1;
+-
++	
+ 	/* Tell the controller where the control and bulk lists are
+ 	 * The lists are empty now. */
+-	WriteDw (OHCI_HOST_EN, &ohci->regs->control); 
++	WriteDw (OHCI_HOST_EN, &ohci->regs->control);
+ 
+ 	ohci->ed_start = NULL;
+-	ohci->ed_tail = NULL;
++//MG:alleen midge	ohci->ed_tail = NULL;
+ 	WriteDw (0, &ohci->regs->ed_hosthead);
+-   
+-  	fminterval = 0x20002edf;
++	
++	fminterval = 0x20002edf;
+ 	
+ 	WriteDw (fminterval, &ohci->regs->fminterval);
+-
+ 	WriteDw (0x628, &ohci->regs->lsthresh);
+-///	WriteDw (0x028, &ohci->regs->lsthresh);
+-
+- 	/* start controller operations */
+- 	ohci->hc_control = OHCI_CTRL_OPER;
++	
++	/* start controller operations */
++	ohci->hc_control = OHCI_CTRL_OPER;
+ 	ohci->disabled = 0;
+- 
+- 	/* Choose the interrupts we care about now, others later on demand */
+-///	mask = OHCI_INT_ACT | OHCI_FATAL_INT | OHCI_SW_INT | OHCI_TD_INT | OHCI_SOF_INT;
++	
++	/* Choose the interrupts we care about now, others later on demand */
++	//mask = OHCI_INT_ACT | OHCI_FATAL_INT | OHCI_SW_INT | OHCI_TD_INT | OHCI_SOF_INT;
+ 	mask = OHCI_INT_ACT | OHCI_FATAL_INT | OHCI_SW_INT | OHCI_TD_INT | OHCI_SO_INT;
+-
++	
+ 	WriteDw ( mask, &ohci->regs->intrenable);
+-
++	
+ 	WriteDw ( mask, &ohci->regs->intrstatus);
+-
+-        WriteDw (RH_NPS+RH_LPSC,&ohci->regs->rhdescriptor);
+-        WriteDw (2, &ohci->regs->hostcontrol);
+-
+- 
++	
++	WriteDw (RH_NPS+RH_LPSC,&ohci->regs->rhdescriptor);
++	WriteDw (2, &ohci->regs->hostcontrol);
++	
++	
+ 	/* connect the virtual root hub */
+ 	ohci->rh.devnum = 0;
+ 	usb_dev = usb_alloc_dev (NULL, ohci->bus);
+ 	if (!usb_dev) {
+-	    ohci->disabled = 1;
+-	    return -ENOMEM;
++		ohci->disabled = 1;
++		return -ENOMEM;
+ 	}
++	
+ 	dev = usb_to_ahci (usb_dev);
+ 	ohci->bus->root_hub = usb_dev;
+ 	usb_connect (usb_dev);
+@@ -2174,7 +2323,7 @@
+ 		ohci->disabled = 1;
+ 		return -ENODEV;
+ 	}
+-
++	
+ 	return 0;
+ }
+ 
+@@ -2188,22 +2337,22 @@
+ 	spin_lock (&usb_ed_lock);
+ 	while (!list_empty (&ohci->timeout_list)) {
+ 		struct urb	*urb;
+-
++		
+ 		urb = list_entry (ohci->timeout_list.next, struct urb, urb_list);
+ 		if (time_after (jiffies, urb->timeout))
+ 			break;
+-
++		
+ 		list_del_init (&urb->urb_list);
+ 		if (urb->status != -EINPROGRESS)
+ 			continue;
+-
++		
+ 		urb->transfer_flags |= USB_TIMEOUT_KILLED | USB_ASYNC_UNLINK;
+ 		spin_unlock (&usb_ed_lock);
+-
++		
+ 		// outside the interrupt handler (in a timer...)
+ 		// this reference would race interrupts
+ 		sahci_unlink_urb (urb);
+-
++		
+ 		spin_lock (&usb_ed_lock);
+ 	}
+ 	spin_unlock (&usb_ed_lock);
+@@ -2216,98 +2365,104 @@
+ 
+ static void ahci_hc_interrupt (int irq, void * __ohci, struct pt_regs * r)
+ {
+-	ohci_t * ohci = __ohci;
+-	ed_t	* ed_tp = NULL;
+-	td_t	* td_tp = NULL;
+-	ed_t	* ed_td;
+-///	__u32	hostHead ;
++	ohci_t *ohci = __ohci;
++	ed_t *ed_tp = NULL;
++	volatile td_t *td_tp = NULL;
++	int DMA_Flag = 0;
++	
++	__u32	hostHead ;
+ 	
+ 	struct ohci_regs * regs = ohci->regs;
+- 	int ints; 
+-
+-#ifdef  AHCI_VERBOSE_DEBUG
+-	printk("*** Interrupt: (%08lx)\n", ReadDw (&regs->intrstatus));
+-#endif
++	int ints;
++	
++	DPRINTF("ahci_hc_interrupt (0x%08x)\n", ReadDw (&regs->intrstatus));
++	
+ 	if ((ints = (ReadDw (&regs->intrstatus) & ReadDw (&regs->intrenable))) == 0) {
+ 		return;
+ 	}
+-
+-  	if ( ints & OHCI_FATAL_INT ) {
+-  		WriteDw (OHCI_FATAL_INT, &regs->intrstatus);
+-  		printk("Fatal Error !!\n");
+-  		hc_reset_ahci(ohci);
++	
++	if ( ints & OHCI_FATAL_INT ) {
++		WriteDw (OHCI_FATAL_INT, &regs->intrstatus);
++		printk("ahci_hc_interrupt: Fatal Error !!\n");
++		hc_reset_ahci(ohci);
+ 	}
+-
++	
+ 	if ( ints & OHCI_SW_INT ) {
+ 		WriteDw (OHCI_SW_INT, &regs->intrstatus);
+-  		printk("Software Interrupt !\n");
+-  	}
++		printk("Software Interrupt !\n");
++	}
+ 	
+-	if ( ints & OHCI_SO_INT ) {
++	if ( ints & OHCI_SO_INT )
++	{
+ 		WriteDw (OHCI_SO_INT, &regs->intrstatus);
+-  		printk("AHCI: Scheduling overrun !\n");
++		printk("AHCI: Scheduling overrun !\n");
+ 	}
+-
+-  	if ( ints & OHCI_TD_INT ) {
+-		ed_tp = ohci->ed_start;
+-		if (ed_tp == NULL) {
++	
++	if (ints & OHCI_TD_INT)
++	{
++		WriteDw( ReadDw(&regs->intrenable) & ~OHCI_TD_INT, &regs->intrenable);
++		hostHead = ReadDw(&ohci->regs->ed_hosthead) & 0xfffffff0;
++		if (hostHead == 0x00) //NULL
++		{
++			WriteDw (OHCI_TD_INT, &regs->intrstatus);
+ 			return;
+ 		}
+-  		WriteDw( ReadDw(&regs->intrenable) & ~OHCI_TD_INT, &regs->intrenable);
+-///		(void)readl (&regs->intrenable); /* PCI posting flush */
+-		while(ed_tp != NULL) {
+-			if (ed_tp->td_head != ed_tp->td_tail) {
+-				ed_td = (ed_t *)ed_tp->dma;
+-				td_tp = ed_tp->td_head;
+-
+-				if ( !(le32_to_cpup(&td_tp->hwINFO) & TD_OWNER) ) {  //process this ED
+-///				if ((ed_tp->hwHeadP & 0xFFFFFFF0) == (ed_tp->hwTailP & 0xFFFFFFF0)) {
+-#ifdef  AHCI_VERBOSE_DEBUG
+-					printk("*Got something in ED=%p (ED: HEAD=%08lx TAIL=%08lx)\n",ed_tp,ed_tp->hwHeadP,ed_tp->hwTailP);
+-#endif
+-					dl_done_list(ohci, (ed_t *)ed_tp);
+-  				} 
+-#ifdef  AHCI_VERBOSE_DEBUG
++		ed_tp = (ed_t *)hostHead;
++		
++		while(!(ed_tp->IsLast))
++		{
++			if (ed_tp->InUse)
++			{
++				td_tp = (volatile td_t*) ed_tp->TD_Addr[0];
++				if ( !((td_tp->hwINFO) & TD_OWNER) )  //process this ED
++				{
++					ed_tp->InUse = 0;
++					DPRINTF("Got something in ED=%p\n",ed_tp);
++					WriteDw(2,&ohci->regs->hostcontrol);	//disable DMA
++					dl_done_list(ohci,(void *)ed_tp->TD_Addr[0]);
++				}
++#ifdef DEBUG
+ 				else {
+-					printk("*Still something not complete: HEAD=%08lx TAIL=%08lx\n",ed_tp->hwHeadP,ed_tp->hwTailP);
++					DPRINTF("*Still something not complete: HEAD=%08x TAIL=%08x\n",ed_tp->hwHeadP,ed_tp->hwTailP);
++					DMA_Flag = 1;	
+ 				}
+ #endif
+-  			}
+-			ed_tp = ed_tp->ed_next;
+-  		}
++			}
++			ed_tp = (ed_t *)ed_tp->hwNextED;
++		}
+ 		WriteDw(OHCI_TD_INT, &regs->intrstatus);
+-		WriteDw( ReadDw(&regs->intrenable) | OHCI_TD_INT, &regs->intrenable);
++		WriteDw(ReadDw(&regs->intrenable) | OHCI_TD_INT, &regs->intrenable);
++		if ( DMA_Flag == 1)
++		{
++			printk(" Re ENABLE DMA  \n");
++			DMA_Flag = 0;
++			WriteDw(6,&ohci->regs->hostcontrol);	//enable DMA
++		}
+ 	}
+-
+-///  	if (0)	{	
+- 	if (ints & OHCI_SOF_INT) { 
+-	//	unsigned int frame = le16_to_cpu (&regs->fmnumber) & 1;
+-	        unsigned long frame = ReadDw(&regs->fmnumber);
+-	        frame = (frame >>16) & 1;
++	
++	//if (ints & OHCI_SOF_INT) {
++/*if (0) {
++		//unsigned int frame = le16_to_cpu (&regs->fmnumber) & 1;
++		unsigned long frame = ReadDw(&regs->fmnumber);
++		frame = (frame >>16) & 1;
+ 		WriteDw( ReadDw(&regs->intrenable) & ~OHCI_SOF_INT, &regs->intrenable);	
+ 		WriteDw (OHCI_SOF_INT, &regs->intrstatus);
+-
+-#ifdef AHCI_VERBOSE_DEBUG
+-		printk("frame = %08lx %08lx ==== %08lx \n",ReadDw(&regs->fmnumber),ohci->ed_rm_list[!frame],ohci->ed_rm_list[frame]);
+-#endif
+-
++		
++		DPRINTF("frame = %08lx %08lx ==== %08lx \n",ReadDw(&regs->fmnumber),ohci->ed_rm_list[!frame],ohci->ed_rm_list[frame]);
++		
+ 		if (ohci->ed_rm_list[!frame] != NULL) {
+-#ifdef AHCI_VERBOSE_DEBUG
+-			printk("DL DEL List \n");
+-#endif
++			DPRINTF("DL DEL List \n");
++			
+ 			dl_del_list (ohci, !frame);
+ 		}
+-
++		
+ 		if (ohci->ed_rm_list[frame] != NULL) {
+-			WriteDw( ReadDw(&regs->intrenable) | OHCI_SOF_INT, &regs->intrenable);
++			WriteDw(OHCI_INTR_SF, &regs->intrenable);
+ 		}
++		WriteDw( ReadDw(&regs->intrenable) | OHCI_SOF_INT, &regs->intrenable);
+ 	}
+-#ifdef  AHCI_VERBOSE_DEBUG
+-	printk("***** Interrupt exit\n");
+-#endif
+- //	WriteDw (ints, &regs->intrstatus);
+-	//writel (OHCI_INTR_MIE, &regs->intrenable);
+-
++*/	
++	DPRINTF("Interrupt exit===>\n");
+ }
+ 
+ /*-------------------------------------------------------------------------*/
+@@ -2317,13 +2472,14 @@
+ static ohci_t * __devinit hc_alloc_ahci (void * mem_base)
+ {
+ 	ohci_t * ohci;
+-	struct usb_bus * bus;
+ 	struct pci_dev *dev;
+-
++	
++	DPRINTF("hc_alloc_ahci (%p)\n",mem_base);
++	
+ 	ohci = (ohci_t *) kmalloc (sizeof *ohci, GFP_KERNEL);
+ 	if (!ohci)
+ 		return NULL;
+-		
++	
+ 	memset (ohci, 0, sizeof (ohci_t));
+ 	
+ 	dev = NULL ; // Not PCI Device 
+@@ -2332,29 +2488,28 @@
+ 	ohci->disabled = 1;
+ 	ohci->sleeping = 0;
+ 	ohci->irq = -1;
+-	ohci->regs = mem_base;   
+-
++	ohci->regs = mem_base;
++	
+ 	ohci->ohci_dev = dev;
+-//	pci_set_drvdata(dev, ohci);
+- 
++	//pci_set_drvdata(dev, ohci);
++	
+ 	INIT_LIST_HEAD (&ohci->ohci_hcd_list);
+ 	list_add (&ohci->ohci_hcd_list, &ohci_hcd_list);
+-
++	
+ 	INIT_LIST_HEAD (&ohci->timeout_list);
+ 	spin_lock_init(&usb_ed_lock);
+-
+-	bus = usb_alloc_bus (&sahci_device_operations);
+-	if (!bus) {
++	
++	ohci->bus = usb_alloc_bus (&sahci_device_operations);
++	if (!ohci->bus) {
+ 		kfree (ohci);
+ 		return NULL;
+ 	}
+-
+-	ohci->bus = bus;
+-	bus->bus_name = "HUB"; // dev->slot_name;
+-	bus->hcpriv = (void *) ohci;
+-
++	
++	ohci->bus->bus_name = hcd_name;
++	ohci->bus->hcpriv = (void *) ohci;
++	
+ 	return ohci;
+-} 
++}
+ 
+ 
+ /*-------------------------------------------------------------------------*/
+@@ -2363,12 +2518,12 @@
+ 
+ static void ahci_hc_release_ohci (ohci_t * ohci)
+ {	
+-//	dbg ("USB HC release ohci usb-%s", ohci->ohci_dev->slot_name);
+-
+-	/* disconnect all devices */    
++	dbg ("USB HC release ohci usb-%s", hcd_name);
++	
++	/* disconnect all devices */
+ 	if (ohci->bus->root_hub)
+ 		usb_disconnect (&ohci->bus->root_hub);
+-
++	
+ 	if (!ohci->disabled)
+ 		hc_reset_ahci (ohci);
+ 	
+@@ -2376,21 +2531,22 @@
+ 		free_irq (ohci->irq, ohci);
+ 		ohci->irq = -1;
+ 	}
+-//	pci_set_drvdata(ohci->ohci_dev, NULL);
+-
+-	usb_deregister_bus (ohci->bus);
+-	usb_free_bus (ohci->bus);
+-
+-	list_del (&ohci->ohci_hcd_list);
+-	INIT_LIST_HEAD (&ohci->ohci_hcd_list);
+-
++	//pci_set_drvdata(ohci->ohci_dev, NULL);
++	if (ohci->bus) {
++		usb_deregister_bus (ohci->bus);
++		usb_free_bus (ohci->bus);
++		
++		list_del (&ohci->ohci_hcd_list);
++		INIT_LIST_HEAD (&ohci->ohci_hcd_list);
++	}
++	
+ 	ahci_mem_cleanup (ohci);
+-    
++	
+ 	/* unmap the IO address space */
+ 	iounmap (ohci->regs);
+-
+-//	pci_free_consistent (ohci->ohci_dev, sizeof *ohci->hcca,
+-//		ohci->hcca, ohci->hcca_dma);
++	
++	//pci_free_consistent (ohci->ohci_dev, sizeof *ohci->hcca,
++	//ohci->hcca, ohci->hcca_dma);
+ 	kfree (ohci);
+ }
+ 
+@@ -2399,21 +2555,17 @@
+ /* Increment the module usage count, start the control thread and
+  * return success. */
+ 
+-static struct pci_driver ohci_pci_driver;
+- 
+-static int __devinit
+-hc_found_ahci ( int irq, void *mem_base)
++//static struct pci_driver ohci_pci_driver;
++
++static int __devinit hc_found_ahci ( int irq, void *mem_base)
+ {
+ 	ohci_t * ohci;
+-	char buf[8], *bufp = buf;
++	//char buf[8], *bufp = buf;
+ 	int ret;
+-
+-#ifndef __sparc__
+-	sprintf(buf, "%d", irq);
+-#else
+-	bufp = __irq_itoa(irq);
+-#endif
+-         
++	
++	printk(KERN_INFO "USB AHCI at membase 0x%lx, IRQ %i\n",
++		(unsigned long) mem_base, irq);
++	
+ 	ohci = hc_alloc_ahci (mem_base);
+ 	if (!ohci) {
+ 		return -ENOMEM;
+@@ -2422,29 +2574,30 @@
+ 		ahci_hc_release_ohci (ohci);
+ 		return ret;
+ 	}
+-
++	
+ 	if (hc_reset_ahci (ohci) < 0) {
+ 		ahci_hc_release_ohci (ohci);
+ 		return -ENODEV;
+ 	}
+-
++	
+ 	usb_register_bus (ohci->bus);
+ 	
+ 	if (request_irq (irq, ahci_hc_interrupt, SA_SHIRQ,
+-			ohci_pci_driver.name, ohci) != 0) {
+-		err ("request interrupt %s failed", bufp);
++			hcd_name, ohci) != 0) {
++		err ("request interrupt %i failed", irq);
+ 		ahci_hc_release_ohci (ohci);
+ 		return -EBUSY;
+ 	}
+-	ohci->irq = irq;     
+-
++	ohci->irq = irq;
++	
+ 	if (hc_start_ahci (ohci) < 0) {
++		err ("can't start usb-%s", hcd_name);
+ 		ahci_hc_release_ohci (ohci);
+ 		return -EBUSY;
+ 	}
+-
++	
+ #ifdef	DEBUG
+-	ohci_dump (ohci, 1);
++	//ohci_dump (ohci, 1);
+ #endif
+ 	return 0;
+ }
+@@ -2452,44 +2605,41 @@
+ /*-------------------------------------------------------------------------*/
+ 
+ 
+-
+-
+ /* configured so that an OHCI device is always provided */
+ /* always called with process context; sleeping is OK */
+ 
+-static int __devinit
+-ahci_ahb_probe (void)
++static int __devinit ahci_ahb_probe (void)
+ {
+ 	unsigned long mem_resource, mem_len;
+ 	void *mem_base;
+-	int irq;  	
++	int irq;
++	
++	DPRINTF("ahci_ahb_probe\n");
+ 	
+ 	/* we read its hardware registers as memory */
+-	irq = 0x3;    //<===== Adm5120 USB Host IRQ No.
++	irq = 0x3; //<===== Adm5120 USB Host IRQ No.
+ 	mem_resource = 0x11200000;
+ 	mem_len = 0x84;
+-	if (!request_mem_region (mem_resource, mem_len, ohci_pci_driver.name)) {
++	if (!request_mem_region (mem_resource, mem_len, hcd_name)) {
+ 		dbg ("controller already in use");
++		return -EBUSY;
+ 	}
+-
++	
+ 	mem_base = ioremap_nocache (mem_resource, mem_len);
+ 	if (!mem_base) {
+ 		err("Error mapping OHCI memory");
++		release_mem_region (mem_resource, mem_len);
+ 		return -EFAULT;
+ 	}
+-
++	
+ 	return hc_found_ahci (irq, mem_base);
+-
+-} 
+-
+-
+-
++	
++}
+ 
+ /*-------------------------------------------------------------------------*/
+ /*
+ static const struct pci_device_id __devinitdata ohci_pci_ids [] = { {
+ 
+-	
+ 	vendor:		0x1022,
+ 	device:		0x740c,
+ 	subvendor:	PCI_ANY_ID,
+@@ -2499,24 +2649,22 @@
+ 
+ } , {
+ 
+-	
+ 	class: 		((PCI_CLASS_SERIAL_USB << 8) | 0x10),
+ 	class_mask: 	~0,
+ 
+-	
+ 	vendor:		PCI_ANY_ID,
+ 	device:		PCI_ANY_ID,
+ 	subvendor:	PCI_ANY_ID,
+ 	subdevice:	PCI_ANY_ID,
+ 
+-	}, {  }
++	}, {}
+ };
+ */
+ /*
+ MODULE_DEVICE_TABLE (pci, ohci_pci_ids);
+ 
+ static struct pci_driver ohci_pci_driver = {
+-	name:		"usb-ohci",
++	name:		"usb-ahci",
+ 	id_table:	&ahci_pci_ids [0],
+ 
+ 	probe:		ahci_pci_probe,
+@@ -2526,7 +2674,6 @@
+ 	suspend:	ahci_pci_suspend,
+ 	resume:		ahci_pci_resume,
+ #endif
+-	
+ }; */
+ 
+  
+@@ -2534,7 +2681,7 @@
+ 
+ static int __init ahci_hcd_init (void) 
+ {
+-	info(" Start Init AHCI_INIT\n");
++	printk(KERN_INFO "Start Init AHCI_INIT " __DATE__ "\n");
+ 	return ahci_ahb_probe();
+ }
+ 
+@@ -2542,7 +2689,8 @@
+ 
+ static void __exit ahci_hcd_cleanup (void) 
+ {	
+-	pci_unregister_driver (&ohci_pci_driver);
++	printk(KERN_INFO "Stop AHCI driver\n");
++	//pci_unregister_driver (&ohci_pci_driver);
+ }
+ 
+ module_init (ahci_hcd_init);
+--- linux-2.4.32/drivers/usb/host/usb-shci.h.orig	2006-10-26 16:11:18.000000000 +0300
++++ linux-2.4.32/drivers/usb/host/usb-shci.h	2006-10-26 16:11:45.000000000 +0300
+@@ -1,13 +1,19 @@
+ /*
+- * URB OHCI HCD (Host Controller Driver) for USB.
++ * URB AHCI HCD (Host Controller Driver) for USB.
+  * 
+  * (C) Copyright 1999 Roman Weissgaerber <weissg@vienna.at>
+  * (C) Copyright 2000-2001 David Brownell <dbrownell@users.sourceforge.net>
+  * 
+- * usb-ohci.h
++ * usb-ahci.h
+  */
+ 
+- 
++
++#ifdef DEBUG
++  #define DPRINTF(...) printk(__VA_ARGS__)
++#else
++  #define DPRINTF(...) 
++#endif
++
+ static int cc_to_error[16] = { 
+ 
+ /* mapping of the OHCI CC status to error codes */ 
+@@ -31,50 +37,47 @@
+ 
+ #include <linux/config.h>
+ 
+-/* ED States */
+-
+-#define ED_NEW 		0x00
+-#define ED_UNLINK 	0x01
+-#define ED_OPER		0x02
+-#define ED_DEL		0x04
+-#define ED_URB_DEL  	0x08
++/* ED (Endpoint Descriptor) States */
+ 
++#define ED_NEW     0x00
++#define ED_UNLINK  0x01
++#define ED_OPER    0x02
++#define ED_DEL     0x04
++#define ED_URB_DEL 0x08
+ 
+-#define ED_TOGG		0x02
++#define ED_TOGG    0x02
+ 
+ /* usb_ohci_ed */
+ struct ed {
+-	__u32 hwINFO;
+-	__u32 hwTailP;
+-	__u32 hwHeadP;
+-	__u32 hwNextED;
+-
+-	struct ed * ed_next;
+-	struct ed * ed_prev;
++	/* Don't change first four, they used for DMA */
++	/* See pg 160 datasheet 1.16 */
++	volatile __u32 hwINFO;
++	volatile __u32 hwTailP;
++	volatile __u32 hwHeadP;
++	volatile __u32 hwNextED;
++	/* the rest is for the driver only: */
++	struct ed *ed_prev;
+ 	__u8 int_period;
+-	__u8 int_branch;		/// unused
++	__u8 int_branch;
+ 	__u8 int_load;
+-	__u8 int_interval;		/// unused
++	__u8 int_interval;
+ 	__u8 state;
+ 	__u8 type;
+ 	__u16 last_iso;
+-	struct ed * ed_rm_list;
+-	__u8 InUse;			/// unused
+-	__u8 IsLast;			/// unused
+-	__u8 NeedCopy;
+-	__u8 Direction;			/// unused
+-///	__u32 TDHead;
+-	struct td * td_head;
+-	struct td * td_tail;
+-        dma_addr_t dma;
+-///	__u32 TD_Addr[4];
+-
+-} __attribute((aligned(16)));
++	struct ed *ed_rm_list;
++	__u16 InUse;
++	__u16 IsLast;
++	__u16 NeedCopy;
++	__u16 Direction;
++	__u32 TDHead;
++	dma_addr_t dma;
++	__u32 TD_Addr[4];
++} __attribute((aligned(32)));
+ typedef struct ed ed_t;
+ 
+- 
+-/* TD info field */
+-#define TD_OWNER    0x80000000	
++
++/* TD (Transfer Descriptors) info field */
++#define TD_OWNER    0x80000000
+ #define TD_CC       0x00000000
+ #define TD_CC_GET(td_p) ((td_p >>27) & 0x0f)
+ #define TD_CC_SET(td_p, cc) (td_p) = ((td_p) & 0x0fffffff) | (((cc) & 0x0f) << 27)
+@@ -83,18 +86,17 @@
+ #define TD_T_DATA0  0x01000000
+ #define TD_T_DATA1  0x01800000
+ #define TD_T_TOGGLE 0x00000000
+-#define TD_R        0x00040000			/// ???
+-#define TD_ISI      0x00003F00
+-#define TD_ISI_SET(X) (((X) & 0x3F)<< 8)
++#define TD_R        0x00040000
++#define TD_DI       0x00003F00
++#define TD_DI_SET(X) (((X) & 0x3F)<< 8)
+ #define TD_DP       0x00600000
+ #define TD_DP_SETUP 0x00000000
+ #define TD_DP_IN    0x00400000
+ #define TD_DP_OUT   0x00200000
+ 
+ #define TD_FN       0x0000003F
+-
+-///#define TD_ISO	    0x00010000			/// ???
+-///#define TD_DEL      0x00020000			/// ???
++#define TD_ISO      0x00010000
++#define TD_DEL      0x00020000
+ 
+ /* CC Codes */
+ #define TD_CC_NOERROR      0x00
+@@ -111,36 +113,29 @@
+ #define TD_BUFFERUNDERRUN  0x0D
+ #define TD_NOTACCESSED     0x0F
+ 
+-#define TD_BUFFLEN	   0x0000FFFF
+-#define TD_INTENABLE	   0x00010000
+-
++#define TD_BUFFLEN         0x0000FFFF
++#define TD_INTENABLE       0x00010000
+ 
+-#define TD_FLAG_LAST	0x01
+-#define TD_FLAG_NOLEN	0x02
+-#define TD_FLAG_ISO	0x04
+-///#define TD_FLAG_REUSE	0x08
+ 
+ #define MAXPSW 1
+ 
+ struct td {
+-	__u32 hwINFO;
+-  	__u32 hwCBP;		/* Current Buffer Pointer */
+-  	__u32 hwBufLen;		/* Buffer Length */
+-  	__u32 hwNextTD;		/* Next TD Pointer */
+-
+-  	__u16 hwPSW[MAXPSW];	/// may be unused
+-  	__u8  flags;
+-  	__u8  index;
+-  	struct ed * ed;
+-  	struct td * td_next;
+-  	struct urb * urb;
+-
++	/* Don't change first four, they are used for DMA */
++	volatile __u32 hwINFO;
++	volatile __u32 hwCBP;		/* Current Buffer Pointer */
++	volatile __u32 hwBufLen;		/* Buffer Length */
++	volatile __u32 hwNextTD;		/* Next TD Pointer */
++	/* the rest is for the driver only: */
++	__u16 hwPSW[MAXPSW];
++	__u8 unused;
++	__u8 index;
++	struct ed * ed;
++	struct td * next_dl_td;
++	struct urb * urb;
++	
+ 	dma_addr_t td_dma;
+ 	dma_addr_t data_dma;
+-	__u32 dma_buf;
+-	__u8  state;
+-	__u8  unused[7];
+-///	__u32 unused2[2];
++	__u32 unused2[2];
+ } __attribute((aligned(32)));	/* normally 16, iso needs 32 */
+ typedef struct td td_t;
+ 
+@@ -149,7 +144,6 @@
+ #define OHCI_ED_INT		(1 << 11)
+ #define OHCI_ED_ISO		(1 << 15)
+ 
+-  
+ /*
+  * Maximum number of root hub ports.  
+  */
+@@ -165,7 +159,7 @@
+ 	__u32	control;		//0x00
+ 	__u32	intrstatus;		//0x04
+ 	__u32	intrenable;		//0x08
+-	__u32   reserved0; 		//0x0c
++	__u32	reserved0;		//0x0c
+ 	__u32	hostcontrol;		//0x10
+ 	__u32	reserved1;		//0x14
+ 	__u32	fminterval;		//0x18
+@@ -193,7 +187,6 @@
+ 	__u32	lsthresh;		//0x70
+ 	__u32	rhdescriptor;		//0x74
+ 	__u32	portstatus[2];		//0x78
+-//	__u32	port1status;		//0x7C
+ 	__u32	ed_hosthead;		//0x80
+ 	
+ } __attribute((aligned(32)));
+@@ -202,51 +195,59 @@
+ /* OHCI CONTROL AND STATUS REGISTER MASKS */
+ 
+ /*
+- * HcControl (control) register masks 
++ * HcControl (control) register masks
+  */
+-#define OHCI_CTRL_SWRESET 	(1<<3)		/* Software Reset */ 
+-#define OHCI_DMA_ARB	 	(1<<2)		/* DMA arbitration */
+-#define OHCI_SW_INT_REQ		(1<<1)      	/* Software Interrupt Request */
+-#define OHCI_HOST_EN		(1<<0)		/* USB Host function Enable */		 
++//MG:
++/* ADM5120 USB General Control (GC) register 0x00h */
++#define OHCI_CTRL_SR     (1<<2)   /* Software reset */
++#define OHCI_CTRL_DMAA   (1<<2)   /* DMA arbitration */
++#define OHCI_CTRL_SIR    (1<<1)   /* Software Interrupt Request */
++#define OHCI_CTRL_UHFE   (1<<0)   /* USB Host Function Enable */
++//--
++
++#define OHCI_CTRL_SWRESET (1<<3)   /* Software Reset */ 
++#define OHCI_DMA_ARB      (1<<2)   /* DMA arbitration */
++#define OHCI_SW_INT_REQ   (1<<1)   /* Software Interrupt Request */
++#define OHCI_HOST_EN      (1<<0)   /* USB Host function Enable */
+  
+ /* 
+  * HcInterrupt 
+  */
+-#define OHCI_INT_ACT	(1<<31)		/* Interrupt Active */
+-#define OHCI_FATAL_INT	(1<<30)		/* Fatal system bus error occur */
+-#define OHCI_SW_INT	(1<<29)		/* Software interrupt */
+-#define OHCI_TD_INT	(1<<20)		/* A TD is complete */
+-#define OHCI_FNO	(1<<11)		/* Frame No Overflow */
+-#define OHCI_SO_INT	(1<<10)		/* Scheduling overrun */
+-#define OHCI_INSMOV_INT	(1<<9)		/* Root Hub Status Change */
+-#define OHCI_BAB_INT	(1<<8)		/* Babble detected */
+-#define OHCI_RES_INT	(1<<5)		/* Resume Detect */
+-#define OHCI_SOF_INT	(1<<4)          /* SOF TRansmitted/received */
+-	  
++#define OHCI_INT_ACT    (1<<31)		/* Interrupt Active */
++#define OHCI_FATAL_INT  (1<<30)		/* Fatal system bus error occur */
++#define OHCI_SW_INT     (1<<29)		/* Software interrupt */
++#define OHCI_TD_INT     (1<<20)		/* A TD is complete */
++#define OHCI_FNO_INT    (1<<11)		/* Frame No Overflow */
++#define OHCI_SO_INT     (1<<10)		/* Scheduling overrun */
++#define OHCI_INSMOV_INT (1<<9)		/* Root Hub Status Change */
++#define OHCI_BAB_INT    (1<<8)		/* Babble detected */
++#define OHCI_RES_INT    (1<<5)		/* Resume Detect */
++#define OHCI_SOF_INT    (1<<4)		/* SOF TRansmitted/received */
++
+ //***************** Host Controller **********************************
+ #define OHCI_CTRL_OPER   (1<<1)         /* USB Bus State Normal Operation */
+-#define OHCI_CTRL_DMA_EN (2<<1)         /* USB HOST DMA ENABLE */ 
++#define OHCI_CTRL_DMA_EN (2<<1)         /* USB HOST DMA ENABLE */
++
++
+ 
+- 
+- 
+ //*****************teh below item will remove after code complete *// 
+  
+- 
+-#define OHCI_CTRL_CBSR	(3 << 0)	/* control/bulk service ratio */
+-#define OHCI_CTRL_PLE	(1 << 2)	/* periodic list enable */
+-#define OHCI_CTRL_IE	(1 << 3)	/* isochronous enable */
+-#define OHCI_CTRL_CLE	(1 << 4)	/* control list enable */
+-#define OHCI_CTRL_BLE	(1 << 5)	/* bulk list enable */
+-#define OHCI_CTRL_HCFS	(3 << 6)	/* host controller functional state */
+-#define OHCI_CTRL_IR	(1 << 8)	/* interrupt routing */
+-#define OHCI_CTRL_RWC	(1 << 9)	/* remote wakeup connected */
+-#define OHCI_CTRL_RWE	(1 << 10)	/* remote wakeup enable */
+-
+-/* pre-shifted values for HCFS */
+-#	define OHCI_USB_RESET	(0 << 6)
+-#	define OHCI_USB_RESUME	(1 << 6)
+-#	define OHCI_USB_OPER	(2 << 6)
+-#	define OHCI_USB_SUSPEND	(3 << 6)
++//MG: The defines below come from the original OHCI driver
++//#define OHCI_CTRL_CBSR	(3 << 0)	/* control/bulk service ratio */
++//#define OHCI_CTRL_PLE	(1 << 2)	/* periodic list enable */
++//#define OHCI_CTRL_IE	(1 << 3)	/* isochronous enable */
++//#define OHCI_CTRL_CLE	(1 << 4)	/* control list enable */
++//#define OHCI_CTRL_BLE	(1 << 5)	/* bulk list enable */
++//#define OHCI_CTRL_HCFS	(3 << 6)	/* host controller functional state */
++//#define OHCI_CTRL_IR	(1 << 8)	/* interrupt routing */
++//#define OHCI_CTRL_RWC	(1 << 9)	/* remote wakeup connected */
++//#define OHCI_CTRL_RWE	(1 << 10)	/* remote wakeup enable */
++
++/* Host General Control register 0x10h 1:0 */
++#define OHCI_USB_RESET   0
++#define OHCI_USB_RESUME  1
++#define OHCI_USB_OPER    2
++#define OHCI_USB_SUSPEND 3
+ 
+ /*
+  * HcCommandStatus (cmdstatus) register masks
+@@ -263,15 +264,15 @@
+  * HcInterruptEnable (intrenable)
+  * HcInterruptDisable (intrdisable)
+  */
+-///#define OHCI_INTR_SO	(1 << 0)	/* scheduling overrun */
+-///#define OHCI_INTR_WDH	(1 << 1)	/* writeback of done_head */
+-///#define OHCI_INTR_SF	(1 << 2)	/* start frame */
+-///#define OHCI_INTR_RD	(1 << 3)	/* resume detect */
+-///#define OHCI_INTR_UE	(1 << 4)	/* unrecoverable error */
+-///#define OHCI_INTR_FNO	(1 << 5)	/* frame number overflow */
+-///#define OHCI_INTR_RHSC	(1 << 6)	/* root hub status change */
+-///#define OHCI_INTR_OC	(1 << 30)	/* ownership change */
+-///#define OHCI_INTR_MIE	(1 << 31)	/* master interrupt enable */
++#define OHCI_INTR_SO	(1 << 0)	/* scheduling overrun */
++#define OHCI_INTR_WDH	(1 << 1)	/* writeback of done_head */
++#define OHCI_INTR_SF	(1 << 2)	/* start frame */
++#define OHCI_INTR_RD	(1 << 3)	/* resume detect */
++#define OHCI_INTR_UE	(1 << 4)	/* unrecoverable error */
++#define OHCI_INTR_FNO	(1 << 5)	/* frame number overflow */
++#define OHCI_INTR_RHSC	(1 << 6)	/* root hub status change */
++#define OHCI_INTR_OC	(1 << 30)	/* ownership change */
++#define OHCI_INTR_MIE	(1 << 31)	/* master interrupt enable */
+ 
+ 
+ 
+@@ -300,11 +301,11 @@
+ #define RH_GET_STATUS           0x0080
+ #define RH_CLEAR_FEATURE        0x0100
+ #define RH_SET_FEATURE          0x0300
+-#define RH_SET_ADDRESS		0x0500
+-#define RH_GET_DESCRIPTOR	0x0680
++#define RH_SET_ADDRESS          0x0500
++#define RH_GET_DESCRIPTOR       0x0680
+ #define RH_SET_DESCRIPTOR       0x0700
+-#define RH_GET_CONFIGURATION	0x0880
+-#define RH_SET_CONFIGURATION	0x0900
++#define RH_GET_CONFIGURATION    0x0880
++#define RH_SET_CONFIGURATION    0x0900
+ #define RH_GET_STATE            0x0280
+ #define RH_GET_INTERFACE        0x0A80
+ #define RH_SET_INTERFACE        0x0B00
+@@ -326,7 +327,7 @@
+ #define RH_C_PORT_ENABLE           0x11
+ #define RH_C_PORT_SUSPEND          0x12
+ #define RH_C_PORT_OVER_CURRENT     0x13
+-#define RH_C_PORT_RESET            0x14  
++#define RH_C_PORT_RESET            0x14
+ 
+ /* Hub features */
+ #define RH_C_HUB_LOCAL_POWER       0x00
+@@ -341,55 +342,43 @@
+ 
+ 
+ /* OHCI ROOT HUB REGISTER MASKS */
+-/* Root Hub Descriptor *//* 0x74*/
+-#define	RH_NDP		(0xff << 0)		/* number of downstream ports */
+-#define	RH_PSM		(1 << 8)		/* power switching mode */
+-#define	RH_NPS		(1 << 9)		/* no power switching */
+-#define	RH_OCPM		(1 << 10)		/* over current protection mode */
+-#define	RH_NOCP		(1 << 11)		/* no over current protection */
+-#define RH_PPCM	        (0xff << 16)		/* port power control mask */
+-#define RH_LPS	     	(1 << 24)		/* local power status */
+-#define RH_OCI	        (1 << 25)		/* over current indicator */
+-#define RH_LPSC	        (1 << 26)		/* local power status change */
+-#define RH_OCIC		(1 << 27)		/* over current indicator change */
+-#define RH_DRWE	        (1 << 28)		/* device remote wakeup enable */
+-#define RH_CRWE	        (1 << 29)		/* clear remote wakeup enable */
+-
+-/* Root Hub Port Status */
+-#define RH_PS_CCS            0x00000001   	/* current connect status */
+-#define RH_PS_PES            0x00000002   	/* port enable status*/
+-#define RH_PS_PSS            0x00000004   	/* port suspend status */
+-#define RH_PS_POCI           0x00000008   	/* port over current indicator */
+-#define RH_PS_PRS            0x00000010  	/* port reset status */
+-#define RH_PS_PPS            0x00000100   	/* port power status */
+-#define RH_PS_LSDA           0x00000200    	/* low speed device attached */
+-#define RH_PS_CSC            0x00010000 	/* connect status change */
+-#define RH_PS_PESC           0x00020000   	/* port enable status change */
+-#define RH_PS_PSSC           0x00040000    	/* port suspend status change */
+-#define RH_PS_OCIC           0x00080000    	/* over current indicator change */
+-#define RH_PS_PRSC           0x00100000   	/* port reset status change */
+- 
++/* Root Hub Descriptor 0x74 */
++#define RH_NDP   (0xff << 0)  /* number of downstream ports */
++#define RH_PSM   (1 << 8)     /* power switching mode */
++#define RH_NPS   (1 << 9)     /* no power switching */
++#define RH_OCPM  (1 << 10)    /* over current protection mode */
++#define RH_NOCP  (1 << 11)    /* no over current protection */
++#define RH_PPCM  (0xff << 16) /* port power control mask */
++#define RH_LPS   (1 << 24)    /* local power status */
++#define RH_OCI   (1 << 25)    /* over current indicator */
++#define RH_LPSC  (1 << 26)    /* local power status change */
++#define RH_OCIC  (1 << 27)    /* over current indicator change */
++#define RH_DRWE  (1 << 28)    /* device remote wakeup enable */
++#define RH_CRWE  (1 << 29)    /* clear remote wakeup enable */
++
++/* Root Hub Port X Status 0x78=port 1, 0x7C=port 2*/
++#define RH_PS_CCS            0x00000001   /* current connect status */
++#define RH_PS_PES            0x00000002   /* port enable status*/
++#define RH_PS_PSS            0x00000004   /* port suspend status */
++#define RH_PS_POCI           0x00000008   /* port over current indicator */
++#define RH_PS_PRS            0x00000010   /* port reset status */
++#define RH_PS_PPS            0x00000100   /* port power status */
++#define RH_PS_LSDA           0x00000200   /* low speed device attached */
++#define RH_PS_CSC            0x00010000   /* connect status change */
++#define RH_PS_PESC           0x00020000   /* port enable status change */
++#define RH_PS_PSSC           0x00040000   /* port suspend status change */
++#define RH_PS_OCIC           0x00080000   /* over current indicator change */
++#define RH_PS_PRSC           0x00100000   /* port reset status change */
++
+ 
+ /* roothub.status bits */
+-#define RH_HS_LPS	     0x00000001		/* local power status */
+-#define RH_HS_OCI	     0x00000002		/* over current indicator */
+-#define RH_HS_DRWE	     0x00008000		/* device remote wakeup enable */
+-#define RH_HS_LPSC	     0x00010000		/* local power status change */
+-#define RH_HS_OCIC	     0x00020000		/* over current indicator change */
+-#define RH_HS_CRWE	     0x80000000		/* clear remote wakeup enable */
+-
+-/* roothub.b masks */
+-//#define RH_B_DR		0x0000ffff		/* device removable flags */
+-//#define RH_B_PPCM	0xffff0000		/* port power control mask */
+-
+-/* roothub.a masks */
+-//#define	RH_A_NDP	(0xff << 0)		/* number of downstream ports */
+-//#define	RH_A_PSM	(1 << 8)		/* power switching mode */
+-//#define	RH_A_NPS	(1 << 9)		/* no power switching */
+-//#define	RH_A_DT		(1 << 10)		/* device type (mbz) */
+-//#define	RH_A_OCPM	(1 << 11)		/* over current protection mode */
+-//#define	RH_A_NOCP	(1 << 12)		/* no over current protection */
+-//#define	RH_A_POTPGT	(0xff << 24)		/* power on to power good time */
++#define RH_HS_LPS            0x00000001   /* local power status */
++#define RH_HS_OCI            0x00000002   /* over current indicator */
++#define RH_HS_DRWE           0x00008000   /* device remote wakeup enable */
++#define RH_HS_LPSC           0x00010000   /* local power status change */
++#define RH_HS_OCIC           0x00020000   /* over current indicator change */
++#define RH_HS_CRWE           0x80000000   /* clear remote wakeup enable */
++
+ 
+ /* urb */
+ typedef struct 
+@@ -399,9 +388,7 @@
+ 	__u16 td_cnt;	// number of tds already serviced
+ 	int   state;
+ 	wait_queue_head_t * wait;
+-	dma_addr_t dma1;
+-	dma_addr_t dma2;
+-///	td_t * td[0];	// list pointer to all corresponding TDs associated with this request
++	td_t * td[0];	// list pointer to all corresponding TDs associated with this request
+ 
+ } urb_priv_t;
+ #define URB_DEL 1
+@@ -446,18 +433,18 @@
+ 	unsigned long flags;		/* for HC bugs */
+ 
+ 	struct ohci_regs * regs;	/* OHCI controller's memory */
+-	struct list_head ohci_hcd_list;	/* list of all ohci_hcd */
++	struct list_head ohci_hcd_list;	/* list of all ohci_hcd */ //MG: ADM specific
+ 
+ 	struct ohci * next; 		// chain of ohci device contexts
+ 	struct list_head timeout_list;
+ 	// struct list_head urb_list; 	// list of all pending urbs
+ 	// spinlock_t urb_list_lock; 	// lock to keep consistency 
+-  
+-	int ohci_int_load[32];		/* load of the 32 Interrupt Chains (for load balancing)*/
+-	ed_t * ed_rm_list[2];		/* lists of all endpoints to be removed */
+-	ed_t * ed_bulktail;		/* last endpoint of bulk list */
+-///	ed_t * ed_controltail;		/* last endpoint of control list */
+- 	ed_t * ed_isotail;		/* last endpoint of iso list */
++
++	int ohci_int_load[32];    /* load of the 32 Interrupt Chains (for load balancing)*/
++	ed_t * ed_rm_list[2];     /* lists of all endpoints to be removed */
++	ed_t * ed_bulktail;       /* last endpoint of bulk list */
++	ed_t * ed_controltail;    /* last endpoint of control list */
++	ed_t * ed_isotail;        /* last endpoint of iso list */
+ 	int intrstatus;
+ 	__u32 hc_control;		/* copy of the hc control reg */
+ 	struct usb_bus * bus;
+@@ -465,25 +452,23 @@
+ 	struct virt_root_hub rh;
+ 
+ 	/* PCI device handle, settings, ... */
+-  	struct pci_dev	*ohci_dev;
++	struct pci_dev	*ohci_dev;
+ //	u8		pci_latency;
+- 	struct pci_pool	*td_cache;
++	struct pci_pool	*td_cache;
+ 	struct pci_pool	*dev_cache;
+ 	struct hash_list_t	td_hash[TD_HASH_SIZE];
+ 	struct hash_list_t	ed_hash[ED_HASH_SIZE];
+ 	ed_t  * ed_start;
+-	ed_t  * ed_tail;
+ 
+ } ohci_t;
+ 
+-#define NUM_EDS 32 ///16		/* num of preallocated endpoint descriptors */ //we reduce to 8
+-/// must be 32
++#define NUM_EDS 32		/* num of preallocated endpoint descriptors */ //we reduce to 8
+ 
+ struct ohci_device {
+ 	ed_t 	ed[NUM_EDS];
+ 	dma_addr_t dma;
+ 	int ed_cnt;
+-	wait_queue_head_t * wait;
++	wait_queue_head_t wait;  //MG: No pointer for OHCI
+ };
+ 
+ // #define ohci_to_usb(ohci)	((ohci)->usb)
+@@ -491,12 +476,12 @@
+ 
+ /* hcd */
+ /* endpoint */
+-static int ep_link(ohci_t * ohci, ed_t * edi);
+-static int ep_unlink(ohci_t * ohci, ed_t * ed);
++//static int ep_link(ohci_t * ohci, ed_t * ed);
++//static int ep_unlink(ohci_t * ohci, ed_t * ed);
+ static ed_t * ep_add_ed_ahci(struct usb_device * usb_dev, unsigned int pipe, int interval, int load, int mem_flags);
+-static void ep_rm_ed(struct usb_device * usb_dev, ed_t * ed);
++//static void ep_rm_ed(struct usb_device * usb_dev, ed_t * ed);
+ /* td */
+-//static void td_fill_ahci(ohci_t * ohci, unsigned int info, dma_addr_t data, int len, urb_t * urb, int index);
++//static void td_fill_ahci(ohci_t * ohci, unsigned int info, dma_addr_t data, int len, struct urb * urb, int index);
+ static void td_submit_urb_ahci(struct urb * urb);
+ /* root hub */
+ static int ahci_rh_submit_urb(struct urb * urb);
+@@ -520,7 +505,6 @@
+ 
+ 
+ /* Recover a TD/ED using its collision chain */
+-/*
+ static inline void *
+ dma_to_ed_td (struct hash_list_t * entry, dma_addr_t dma)
+ {
+@@ -532,26 +516,23 @@
+ 	return scan->virt;
+ }
+ 
+-
+ static inline struct ed *
+ dma_to_ed (struct ohci * hc, dma_addr_t ed_dma)
+ {
+-	printk(" ED DMA = %08lx\n",(long unsigned)ed_dma);
++	DPRINTF(" ED DMA = %08lx\n",(long unsigned) ed_dma);
+ 	return (struct ed *) dma_to_ed_td(&(hc->ed_hash[ED_HASH_FUNC(ed_dma)]),
+ 				      ed_dma);
+ }
+ 
+-
+ static inline struct td *
+ dma_to_td (struct ohci * hc, dma_addr_t td_dma)
+ {
+-	printk(" TD DMA = %08lx\n",(long unsigned)td_dma);
++	DPRINTF(" TD DMA = %08lx\n",(long unsigned)td_dma);
+ 	return (struct td *) dma_to_ed_td(&(hc->td_hash[TD_HASH_FUNC(td_dma)]),
+ 				      td_dma);
+ }
+-*/
++
+ /* Add a hash entry for a TD/ED; return true on success */
+-/*
+ static inline int
+ hash_add_ed_td(struct hash_list_t * entry, void * virt, dma_addr_t dma)
+ {
+@@ -615,20 +596,18 @@
+ 	}
+ }
+ 
+-
+ static inline void
+ hash_free_ed (struct ohci * hc, struct ed * ed)
+ {
+ 	hash_free_ed_td (&(hc->ed_hash[ED_HASH_FUNC(ed->dma)]), ed);
+ }
+ 
+-
+ static inline void
+ hash_free_td (struct ohci * hc, struct td * td)
+ {
+ 	hash_free_ed_td (&(hc->td_hash[TD_HASH_FUNC(td->td_dma)]), td);
+ }
+-*/
++
+ 
+ static int ahci_mem_init (struct ohci *ohci)
+ {
+@@ -637,7 +616,7 @@
+ 		32 /* byte alignment */,
+ 		0 /* no page-crossing issues */,
+ 		GFP_KERNEL | OHCI_MEM_FLAGS);
+-
++	
+ 	if (!ohci->td_cache)
+ 		return -ENOMEM;
+ 	ohci->dev_cache = pci_pool_create ("ohci_dev", ohci->ohci_dev,
+@@ -645,7 +624,7 @@
+ 		16 /* byte alignment */,
+ 		0 /* no page-crossing issues */,
+ 		GFP_KERNEL | OHCI_MEM_FLAGS);
+-
++	
+ 	if (!ohci->dev_cache)
+ 		return -ENOMEM;
+ 	return 0;
+@@ -664,73 +643,63 @@
+ }
+ 
+ /* TDs ... */
+-static inline struct td *
+-td_alloc (struct ohci *hc, int mem_flags)
++static inline struct td * td_alloc (struct ohci *hc, int mem_flags)
+ {
+ 	dma_addr_t	dma;
+ 	struct td	*td;
+-
++	
+ 	td = pci_pool_alloc (hc->td_cache, mem_flags, &dma);
++	
+ 	if (td) {
+ 		memset (td, 0, sizeof (*td));
+ 		td->td_dma = dma;
+ 		/* hash it for later reverse mapping */
+-/*		
+ 		if (!hash_add_td (hc, td)) {
+ 			pci_pool_free (hc->td_cache, td, dma);
+ 			return NULL;
+ 		}
+-*/
+ 	}
+-#ifdef AHCI_VERBOSE_DEBUG
+-	printk("TD ALLOC [%p]\n",td);
+-#endif
++	DPRINTF("TD ALLOC (%p), hc->td_cache=(%p), mem_flags=%i, dma=(0x%x)\n",td,hc->td_cache,mem_flags, dma);
++	
+ 	return td;
+ }
+ 
+-static inline void
+-td_free (struct ohci *hc, struct td *td)
++static inline void td_free (struct ohci *hc, struct td *td)
+ {
+-#ifdef AHCI_VERBOSE_DEBUG
+-	printk("TD FREE [%p]\n",td);
+-#endif
+-///	hash_free_td (hc, td);
++	DPRINTF("TD Free [%p] \n",td);
++	hash_free_td (hc, td);
+ 	pci_pool_free (hc->td_cache, td, td->td_dma);
+ }
+ 
+ 
+ /* DEV + EDs ... only the EDs need to be consistent */
+-static inline struct ohci_device *
+-dev_alloc (struct ohci *hc, int mem_flags)
++static inline struct ohci_device * dev_alloc (struct ohci *hc, int mem_flags)
+ {
+-	dma_addr_t		dma;
+-	struct ohci_device	*dev;
+-	int			i, offset;
++	dma_addr_t          dma;
++	struct ohci_device* dev;
++	int                 i, offset;
+ 
+ 	dev = pci_pool_alloc (hc->dev_cache, mem_flags, &dma);
+-#ifdef AHCI_VERBOSE_DEBUG
+-	printk(" Allocate Buff %p\n",dev);
+-#endif
++	DPRINTF(" Allocate Buff %p \n",dev);
+ 	if (dev) {
+ 		memset (dev, 0, sizeof (*dev));
++		init_waitqueue_head (&dev->wait);
+ 		dev->dma = dma;
+-		offset = ((__u8 *)&dev->ed) - ((__u8 *)dev);
+-		for (i = 0; i < NUM_EDS; i++, offset += sizeof dev->ed [0]) {
++		offset = ((char *)&dev->ed) - ((char *)dev);
++		for (i = 0; i < NUM_EDS; i++, offset += sizeof dev->ed [0])
++		{	
+ 			dev->ed [i].dma = dma + offset;
+-///			(struct ohci_device *) dev->ed [i].hwNextED = &(dev->ed[i+1]); //temp
++			dev->ed [i].hwNextED = (__u32) &(dev->ed[i+1]); //temp
+ 		}
+-///		(struct ohci_device *) dev->ed [NUM_EDS-1].hwNextED = NULL;
++		dev->ed [NUM_EDS-1].hwNextED = (__u32) NULL;
+ 		/* add to hashtable if used */
+ 	}
+ 	return dev;
+ }
+ 
+-static inline void
+-dev_free (struct ohci *hc, struct ohci_device *dev)
++static inline void dev_free (struct ohci *hc, struct ohci_device *dev)
+ {
+-#ifdef AHCI_VERBOSE_DEBUG
+-	printk(" Free Buff %p\n",dev);
+-#endif
++	DPRINTF("dev_free hc=(%p), dev=(%p)\n",hc,dev);
+ 	pci_pool_free (hc->dev_cache, dev, dev->dma);
+ }
+ 

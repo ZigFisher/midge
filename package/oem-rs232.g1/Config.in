@@ -1,0 +1,13 @@
+config BR2_PACKAGE_SIGRAND_MR17S
+	prompt "mr17s ................. Sigrand MR17S RS232 adapter driver"
+	tristate
+	default y if CONFIG_DEVEL
+	depends on BR2_LINUX_2_6_SIGRAND5120
+
+config BR2_PACKAGE_SIGRAND_MR17S_DEBUG
+	prompt "mr17s_debug ......... Sigrand MR17S RS232 module Debug"
+	bool
+	default n
+	depends on BR2_LINUX_2_6_SIGRAND5120
+	depends on BR2_PACKAGE_SIGRAND_MR17S
+

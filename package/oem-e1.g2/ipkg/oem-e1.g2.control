@@ -1,0 +1,4 @@
+Package: oem-e1.g2
+Priority: optional
+Section: net
+Description: 2nd generation E1 device driver 

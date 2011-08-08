@@ -1,0 +1,65 @@
+#!/bin/sh
+# Downloads kdb mac file with MAC-addresses at first boot (or by 'force' key).
+# Updates KDB with new MAC-addresses.
+
+MACSERVER="192.168.2.1"
+MACPORT="1030"
+FIRST_BOOT_FILE="/etc/kdb_notupdated"
+KDB_MAC_FILE_SERVER="kdbmac"
+KDB_MAC_FILE_LOCAL="/tmp/kdbmac"
+
+. /bin/midge_functions
+
+tftp="/usr/bin/tftp"
+ifup="/sbin/ifup"
+kdb="/usr/bin/kdb"
+
+required tftp
+required reboot
+required kdb
+
+showerr()
+{
+    echo -e $1
+    exit 1
+}
+
+# check for first boot or 'force'
+[ -e $FIRST_BOOT_FILE -o "x$1" = "xforce" ] || exit 0
+
+# set up network interface
+$ifup eth0
+
+# require to generate kdb mac file. if server is unreachable — don't try to do this in next time
+echo GENERATE_MAC |nc $MACSERVER $MACPORT 2>/dev/null |grep SUCCESS >/dev/null
+if [ $? != 0 ]; then
+	[ -e $FIRST_BOOT_FILE ] && rm $FIRST_BOOT_FILE
+	showerr "MAC-address server is unreachable. You can update your MAC-address manually by running:\n/etc/init.d/updatekdb force"
+fi
+
+# download kdb mac file
+$tftp -l $KDB_MAC_FILE_LOCAL -r $KDB_MAC_FILE_SERVER -g $MACSERVER
+[ $? = 0 ] || showerr "Error while downloading kdb mac file"
+
+# check file
+[ -r $KDB_MAC_FILE_LOCAL ] || showerr "Unable to read downloaded kdb mac file $KDB_MAC_FILE_LOCAL"
+
+# update KDB
+echo "Updating MAC addresses"
+for i in `cat $KDB_MAC_FILE_LOCAL`; do
+    $kdb set $i
+done
+
+# copy new KDB with MAC addresses to default KDB
+cp /etc/kdb /etc/kdb.default
+
+# request to delete kdb mac file
+echo DELETE_MAC |nc $MACSERVER $MACPORT >/dev/null
+
+# remove downloaded kdb mac file
+rm $KDB_MAC_FILE_LOCAL
+
+# remove tag of first boot
+[ -e $FIRST_BOOT_FILE ] && rm $FIRST_BOOT_FILE
+
+[ "x$1" = "xforce" ] && echo "You must reboot the system to apply new MAC-addresses"

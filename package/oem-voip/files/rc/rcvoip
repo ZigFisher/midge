@@ -1,0 +1,96 @@
+#!/bin/sh
+
+PORTSINFO="/proc/driver/sgatab/channels"
+
+gen_config()
+{
+    # Check that KDB settings are correct for hardware
+
+    # Remove KDB VF channel settings for non-exist VF channels
+    kdb_channels=`kdb sskls 'sys_voip_vf_channels*' sys_voip_vf_channels_ _ |uniq`
+    for channel in $kdb_channels; do
+            if ! grep -q "$channel:VF" $PORTSINFO; then
+                    echo "Remove KDB VF channel settings for non-exist VF channel $channel"
+                    kdb del sys_voip_vf_channels_${channel}_*
+            fi
+    done
+
+    # Remove KDB VF general settings for non-exist VF channels
+    kdb_channels=`kdb sskls 'sys_voip_vf_settings*' sys_voip_vf_settings_ _ |uniq`
+    for channel in $kdb_channels; do
+            if ! grep -q "$channel:VF" $PORTSINFO; then
+                    echo "Remove KDB VF general settings for non-exist VF channel $channel"
+                    kdb del sys_voip_vf_settings_${channel}_*
+            fi
+    done
+
+    # Remove KDB hotline settings for non-exist FXO/FXS channels
+    kdb_channels=`kdb sskls 'sys_voip_hotline*' sys_voip_hotline_ _ |uniq`
+    for channel in $kdb_channels; do
+            if ! grep -Eq "$channel:(FXO|FXS)" $PORTSINFO; then
+                    echo "Remove KDB hotline settings for non-exist FXO/FXS channel $channel"
+                    kdb del sys_voip_hotline_${channel}_*
+            fi
+    done
+
+    # Remove KDB FXO settings for non-exist FXO channels
+    kdb_channels=`kdb sskls 'sys_voip_fxo*' sys_voip_fxo_ _ |uniq`
+    for channel in $kdb_channels; do
+            if ! grep -q "$channel:FXO" $PORTSINFO; then
+                    echo "Remove KDB FXO settings for non-exist FXO channel $channel"
+                    kdb del sys_voip_fxo_${channel}_*
+            fi
+    done
+
+	/etc/templates/Update voip
+}
+
+case "$1" in
+start)
+	# set presence of VoIP module to 0
+	kdb set sys_voip_present=0
+
+	# Testing module presence
+	card_present=`cat /proc/pci | grep 0055:009c | wc -l`
+	if test $card_present != 0; then
+		echo "Starting VoIP services:" 
+		
+		echo "   ...generating config files" 
+		# find VoIP module
+		if [ -r $PORTSINFO ]; then
+			porttype=`head -n1 $PORTSINFO | awk -F ':' '{print $2}'`
+			if [ "$porttype" != "UNDEFINED" ]; then
+				kdb set sys_voip_present=1
+				gen_config
+			fi
+		fi
+
+		echo "   ...starting svi" 
+		/bin/svi
+		echo "   ...starting svc" 
+		/bin/svc
+		echo "   ...starting svd" 
+		killall svd 2>/dev/null
+		/bin/svd
+	fi
+;;
+stop)
+	echo -n "Stoping VoIP daemon:"
+	killall svd 2>/dev/null
+	echo " OK"
+;;
+restart)
+	# check that VoIP module is installed
+	if [ "x$(kdb get sys_voip_present)" = "x1" ]; then
+		killall svd 2>/dev/null
+		/bin/svc --clear-and-exit
+		/bin/svd
+	fi
+;;
+*)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+;;
+esac
+
+exit 0

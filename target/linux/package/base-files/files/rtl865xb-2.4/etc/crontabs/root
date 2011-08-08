@@ -1,0 +1,2 @@
+# syncs time
+15	*/2	* * *	/usr/sbin/rdate -s clock-1.cs.cmu.edu

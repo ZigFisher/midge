@@ -1,0 +1,33 @@
+#!/bin/sh
+
+test -x /usr/sbin/ndyndns || exit 0
+
+ndyndns_start() {
+    echo "Starting ndyndns..."
+    /usr/sbin/ndyndns -c /mnt/usb/etc -f /mnt/usb/etc/ndyndns.conf &
+}
+
+ndyndns_stop() {
+    echo "Stopping ndyndns..."
+    killall ndyndns
+}
+
+ndyndns_restart() {
+    ndyndns_stop
+    sleep 1
+    ndyndns_start
+}
+
+case "$1" in
+'start')
+    ndyndns_start
+    ;;
+'stop')
+    ndyndns_stop
+    ;;
+'restart')
+    ndyndns_restart
+    ;;
+*)
+    ndyndns_start
+esac

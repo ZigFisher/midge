@@ -1,0 +1,199 @@
+diff -ur kepler-1.0-orig/config kepler-1.0/config
+--- kepler-1.0-orig/config	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/config	2007-08-15 17:45:16.000000000 +0300
+@@ -14,7 +14,7 @@
+ FPIC= -fPIC 
+ LIB_OPTION= -shared
+ LUASOCKET_DEFS=-DLUASOCKET_DEBUG
+-LUASOCKET_LD=gcc
++LUASOCKET_LD=$(CC)
+ 
+ # MacOS X options
+ #FPIC=
+@@ -124,7 +124,7 @@
+ WARN= -O2 -pedantic -Wall -W -Waggregate-return -Wcast-align -Wmissing-prototypes -Wnested-externs -Wshadow -Wwrite-strings
+ KINCS= -I$(LUA_INC) -I$(COMPAT_DIR) $(LUASQL_INCS)
+ CFLAGS= $(WARN) $(FPIC) $(KINCS) $(LUASOCKET_DEFS) $(CGILUA_DEFS) -fno-common
+-CC= gcc
++#CC= gcc
+ CL_LIBS= $(LUA_LIBS) $(DLLIB)
+ LIBS= $(CL_LIBS)
+ LIBNAME= $T.so.$V
+diff -ur kepler-1.0-orig/configure kepler-1.0/configure
+--- kepler-1.0-orig/configure	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/configure	2007-08-15 17:45:16.000000000 +0300
+@@ -220,7 +220,7 @@
+ 
+ if [ "$BUILD_LUA" = "no" ]
+ then
+-   test_package "" "LuaBinaries" $LUABINARIES_DIR/include/lua/5.0/lua.h --with-lua
++   test_package "" "LuaBinaries" $LUABINARIES_DIR/include/lua.h --with-lua
+ fi
+ 
+ test_package luaexpat "Expat" $EXPAT_DIR/include/expat.h --with-expat
+diff -ur kepler-1.0-orig/lua-5.0.3/config kepler-1.0/lua-5.0.3/config
+--- kepler-1.0-orig/lua-5.0.3/config	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/lua-5.0.3/config	2007-08-15 17:45:16.000000000 +0300
+@@ -108,7 +108,7 @@
+ # You need an ANSI C compiler. gcc is a popular one. We do not use -ansi in
+ # WARN because it disables POSIX features used in the libraries.
+ #
+-CC= gcc
++#CC= gcc
+ WARN= -Wall
+ 
+ # ------------------------------------------------------------------ C options
+diff -ur kepler-1.0-orig/luaexpat/config kepler-1.0/luaexpat/config
+--- kepler-1.0-orig/luaexpat/config	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/luaexpat/config	2007-08-15 17:45:16.000000000 +0300
+@@ -28,4 +28,4 @@
+ 
+ CFLAGS = $(CWARNS) -ansi -O2 -I$(LUA_INC) \
+    -I$(COMPAT_DIR) -I$(EXPAT_INC)
+-CC = gcc
++#CC = gcc
+diff -ur kepler-1.0-orig/luafilesystem/config kepler-1.0/luafilesystem/config
+--- kepler-1.0-orig/luafilesystem/config	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/luafilesystem/config	2007-08-15 17:45:16.000000000 +0300
+@@ -15,6 +15,6 @@
+ WARN= -O2 -Wall -fPIC -W -Waggregate-return -Wcast-align -Wmissing-prototypes -Wnested-externs -Wshadow -Wwrite-strings
+ INCS= -I$(LUA_INC) -I$(COMPAT_DIR)
+ CFLAGS= $(WARN) $(INCS)
+-CC= gcc
++#CC= gcc
+ 
+ # $Id: config,v 1.14 2005/06/24 01:49:16 tomas Exp $
+diff -ur kepler-1.0-orig/luafilesystem/Makefile kepler-1.0/luafilesystem/Makefile
+--- kepler-1.0-orig/luafilesystem/Makefile	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/luafilesystem/Makefile	2007-08-15 17:46:31.000000000 +0300
+@@ -17,7 +17,7 @@
+ 	export MACOSX_DEPLOYMENT_TARGET="10.3"; $(CC) $(CFLAGS) $(LIB_OPTION) -o src/$(LIBNAME) $(OBJS)
+ 
+ $(COMPAT_O): $(COMPAT_DIR)/compat-5.1.c
+-	$(CC) -c $(CFLAGS) -o $@ $(COMPAT_DIR)/compat-5.1.c
++	$(CC) -c $(CFLAGS) -I../lua-5.0.3/include -o $@ $(COMPAT_DIR)/compat-5.1.c
+ 
+ install: src/$(LIBNAME)
+ 	mkdir -p $(LUA_LIBDIR)
+diff -ur kepler-1.0-orig/luasocket-2.0.1/config kepler-1.0/luasocket-2.0.1/config
+--- kepler-1.0-orig/luasocket-2.0.1/config	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/luasocket-2.0.1/config	2007-08-15 17:45:16.000000000 +0300
+@@ -48,11 +48,11 @@
+ #------
+ # Compiler and linker settings
+ # for Linux
+-CC=gcc
++#CC=gcc
+ DEF=-DLUASOCKET_DEBUG 
+ CFLAGS= $(LUAINC) -I$(COMPAT) $(DEF) -pedantic -Wall -O2 -fpic
+ LDFLAGS=-O -shared -fpic
+-LD=gcc 
++#LD=gcc 
+ 
+ #------
+ # End of makefile configuration
+diff -ur kepler-1.0-orig/Makefile kepler-1.0/Makefile
+--- kepler-1.0-orig/Makefile	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/Makefile	2007-08-15 17:47:37.000000000 +0300
+@@ -110,14 +110,14 @@
+ # General compilation flags
+ ################
+ 
+-CC=gcc
++#CC=gcc
+ PLATFORM_CFLAGS=-Wl,-E
+ PLATFORM_LDFLAGS=-lm -ldl
+ LIB_FLAG=-shared -fPIC
+ 
+ ifeq ($(BUILD_LUA), yes)
+    override LUABINARIES_LIB=lua-$(LUABINARIES_VERSION)/lib/liblua50.a
+-   override LUABINARIES_INCLUDEDIR=$(PWD)/lua-$(LUABINARIES_VERSION)/include
++   override LUABINARIES_INCLUDEDIR=lua-$(LUABINARIES_VERSION)/include
+ endif
+ 
+ LUABINARIES_LIB=-L$(LUABINARIES_LIBDIR) -llua50
+@@ -125,7 +125,7 @@
+ COMPAT_INCLUDEDIR=compat/src
+ 
+ LUABINARIES_FLAGS=$(PLATFORM_CFLAGS)
+-LUASOCKET_LD=gcc
++LUASOCKET_LD=$(CC)
+ LUASOCKET_FLAGS=-DLUASOCKET_DEBUG -I$(LUABINARIES_INCLUDEDIR) -Icompat-5.1r5
+ LUASOCKET_LDFLAGS=$(LIB_FLAG) -O -fpic
+ COMPAT_FLAGS=-I$(LUABINARIES_INCLUDEDIR)
+@@ -333,7 +333,7 @@
+ 	   PLATFORM_LDFLAGS="-lm -ldl" \
+ 	   LIB_FLAG="-bundle -undefined dynamic_lookup -all_load" \
+ 	   LUASOCKET_FLAGS="$(LUASOCKET_FLAGS) -DUNIX_HAS_SUN_LEN -fno-common" \
+-	   LUASOCKET_LD="gcc" \
++	   LUASOCKET_LD="$(CC)" \
+ 	   build
+ 
+ FreeBSD-build:
+@@ -363,6 +363,7 @@
+ 
+ LuaBinaries-install: LuaBinaries-build
+ 	cd lua-$(LUABINARIES_VERSION) && make \
++	   CC=$(CC) \
+ 	   INSTALL_ROOT="$(LUABINARIES_INSTALL_DIR)" \
+ 	   MYLDFLAGS="$(LUABINARIES_FLAGS)" \
+ 	   INSTALL_EXEC="install -m 0755" \
+@@ -396,7 +397,7 @@
+ 
+ $(LUASOCKET_TESTFILE): luasocket-$(LUASOCKET_VERSION)
+ 	cd luasocket-$(LUASOCKET_VERSION) && make \
+-	   CFLAGS+="$(LUASOCKET_FLAGS)" \
++	   CFLAGS+="$(LUASOCKET_FLAGS) -I../../lua-5.0.3/include" \
+ 	   LDFLAGS="$(LUASOCKET_LDFLAGS)" \
+ 	   LD="$(LUASOCKET_LD)"
+ 
+@@ -497,7 +498,8 @@
+ 
+ $(LUAFILESYSTEM_TESTFILE): luafilesystem
+ 	cd luafilesystem && make \
+-	   LUA_INC=$(LUABINARIES_INCLUDEDIR) \
++	   CC=$(CC) \
++	   LUA_INC=../$(LUABINARIES_INCLUDEDIR) \
+ 	   LIB_OPTION="$(LIB_FLAG)"
+ 
+ LuaFileSystem-install: $(LUAFILESYSTEM_TESTFILE)
+@@ -671,7 +673,7 @@
+ 	cd rings && make \
+ 	   OBJS="src/rings.o" \
+ 	   LIB_OPTION="$(LIB_FLAG)" \
+-	   CFLAGS+="$(RINGS_CFLAGS)"
++	   CFLAGS+="$(RINGS_CFLAGS) -I../lua-5.0.3/include"
+ 
+ Rings-install: $(RINGS_TESTFILE)
+ 	cd rings && make \
+@@ -818,7 +820,7 @@
+ 	cd md5 && make \
+ 	   COMPAT_DIR="../$(COMPAT_INCLUDEDIR)" \
+ 	   LIB_OPTION="$(LIB_FLAG)" \
+-	   CFLAGS+="$(MD5_FLAGS)"
++	   CFLAGS+="$(MD5_FLAGS) -I../lua-5.0.3/include"
+ 
+ MD5-install: MD5-build
+ 	cd md5 && make \
+diff -ur kepler-1.0-orig/md5/config kepler-1.0/md5/config
+--- kepler-1.0-orig/md5/config	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/md5/config	2007-08-15 17:45:16.000000000 +0300
+@@ -23,6 +23,6 @@
+ WARN= -O2 -Wall -fPIC -W -Waggregate-return -Wcast-align -Wmissing-prototypes -Wnested-externs -Wshadow -Wwrite-strings -Wpointer-arith
+ INCS= -I$(LUA_INC) -I$(COMPAT_DIR)
+ CFLAGS= $(WARN) $(INCS)
+-CC= gcc
++#CC= gcc
+ 
+ # $Id: config,v 1.3 2006/07/24 01:16:37 tomas Exp $
+diff -ur kepler-1.0-orig/rings/config kepler-1.0/rings/config
+--- kepler-1.0-orig/rings/config	2006-11-29 19:04:50.000000000 +0200
++++ kepler-1.0/rings/config	2007-08-15 17:45:16.000000000 +0300
+@@ -15,6 +15,6 @@
+ WARN= -O2 -Wall -fPIC -W -Waggregate-return -Wcast-align -Wmissing-prototypes -Wnested-externs -Wshadow -Wwrite-strings -Wpointer-arith -pedantic
+ INCS= -I$(LUA_INC) -I$(COMPAT_DIR)
+ CFLAGS= $(WARN) $(INCS)
+-CC= gcc
++#CC= gcc
+ 
+ # $Id: config,v 1.1.1.1 2005/12/29 13:09:17 tomas Exp $

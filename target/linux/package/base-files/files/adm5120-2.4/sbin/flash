@@ -1,0 +1,71 @@
+#!/bin/sh
+#
+# flash is a part of midge - mini distribuition for adm5120 based routers
+#
+# Copyright (C) 2004-2005 by Vladislav Moskovets <midge at vlad.org.ua>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+
+test -f /bin/midge_functions && . /bin/midge_functions 
+test -f /etc/midge.conf && . /etc/midge.conf
+
+get_size(){
+	ls -sk $1 |  sed -e "s/ \+/ /g" | cut -d" " -f2
+}
+
+usage(){
+	echo "Usage: $0 clear | save | load [dst] " >&2
+	exit 1
+}
+
+load(){
+	local dst=/
+	[ "$1" ] && dst="$1"
+	info 2 "Extracting data from $DATAFS_PARTITION to $dst"
+	$DATAFS_DECOMPRESSOR $DATAFS_PARTITION | tar xvf - -C $dst
+}
+
+save(){
+	tmp="/tmp/flash.tar.$DATAFS_COMMPRESSOR"
+	info 2 "Saving to $tmp"
+	tar cvf - $(cat $SAVE_LIST) | $DATAFS_COMMPRESSOR >$tmp
+	if [ "$(get_size $tmp)" -lt $(($DATAFS_PARTITION_SIZE/1024)) ]; then
+		dd if=$tmp of=$DATAFS_PARTITION bs=64k
+	else
+		echo "Error: File $tmp too big: $(get_size $tmp)k"
+	fi
+	rm $tmp
+}
+
+clear(){
+	dd if=/dev/zero of=$DATAFS_PARTITION bs=1k count=1 && \
+	echo "DataFS cleared"
+}
+
+main(){
+	[ "$MIDGE_TYPE" != "tmpfs" ] && die "flash can be used on tmpfs version only"
+	local cmd="$1"
+	[ -z "$cmd" ] && usage
+	shift
+	case "$cmd" in 
+		load) 
+			load $@ 
+			;;
+		save) 
+			# create savelist 
+			[ ! -e "$SAVE_LIST" ] && echo "/etc /usr/local /root /lib/modules" >"$SAVE_LIST"
+			save $@ 
+			;;
+		*) 
+			usage $@ 
+			;;
+	esac
+}
+
+main $@
+
+
+

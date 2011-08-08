@@ -1,0 +1,4 @@
+Package: fcgi
+Priority: optional
+Section: libs
+Description: FastCGI lib

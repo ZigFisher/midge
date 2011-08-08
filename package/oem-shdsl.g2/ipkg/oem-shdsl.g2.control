@@ -1,0 +1,4 @@
+Package: oem-shdsl.g2
+Priority: optional
+Section: net
+Description: drivers_stuff

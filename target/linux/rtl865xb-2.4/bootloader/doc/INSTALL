@@ -1,0 +1,29 @@
+======================================================================
+= Copyright c                  Realtek Semiconductor Corporation, 2002  
+= All rights reserved.
+======================================================================
+
+LOADER PROGRAM
+
+You may have different packages of loader:
+
+A. Whole uClinux Distribution
+   If you have the whole uClinux distribution, you should first 
+   'make menuconfig' in the uClinux root directory. Then, build loader
+   by type 'make clean && make' in the 'loader_srcroot' directory.
+
+B. Stand-alone Loader
+   If you only obtain a 'loader_srcroot.tgz' file, you may follow
+   the steps to build loader.
+
+   1. Type 'tar -zxvf loader_srcroot.tgz' to uncompress archive.
+   2. Change directory to the product directory, e.g. 'cd loader_srcroot'.
+   3. Type 'make' to build loader.
+
+After the building procedure, you will get the following files in the 
+'loader_srcroot' directory.
+
+   'ldr.bix'  -- file used for BOOTP/TFTP 
+   'ldr.out'  -- file used for MULTI (ICE)
+   'ldr.rom'  -- file used for EEPROM programmer
+

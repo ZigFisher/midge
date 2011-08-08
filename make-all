@@ -1,0 +1,69 @@
+#!/bin/sh
+
+INSTALL_DIR=/var/www/midge/kamikaze/20061129/
+
+
+clean_root(){
+	make clean_root
+}
+
+clean_linux(){
+	rm -rf build_mipsel/linux*
+}
+
+clean_build(){
+	rm -rf build_mipsel
+}
+
+install(){
+	mkdir -p $INSTALL_DIR
+	cp -a bin $INSTALL_DIR
+	rm -f bin/openwrt*
+}
+
+build(){
+	local ver=$1
+	local config=$2
+	clean_linux
+	temp=`tempfile -p linux -s -config`
+	if [ -r target/linux/adm5120-$ver/config-$config ]; then
+		cp target/linux/adm5120-$ver/config $temp
+		cp target/linux/adm5120-$ver/config-$config target/linux/adm5120-$ver/config
+	fi
+	cp target/linux/adm5120-$ver/openwrt-config-$config .config
+	make oldconfig DEVELOPER=1
+	make --jobs=4 V=99
+	ret=$?
+	if [ "$ret" = 0 ]; then
+		rename "s/.bin/-$config.bin/" bin/*
+		install 
+	fi
+
+	if [ -s $temp ]; then
+		cp $temp target/linux/adm5120-$ver/config
+	fi
+	rm $temp
+	[ "$ret" != 0 ] && exit 1
+}
+
+make_snapshot() {
+	dir=$(basename `pwd`)
+	cd ..
+	tar cvjf $INSTALL_DIR/openwrt-midge-snapshot-`date +%Y%m%d`.tar.bz2 \
+				--exclude $dir/dl \
+				--exclude $dir/bin \
+				--exclude $dir/build_mips \
+				--exclude $dir/build_mipsel \
+				--exclude $dir/staging_dir_mips \
+				--exclude $dir/staging_dir_mipsel \
+				--exclude $dir/toolchain_build_mips \
+				--exclude $dir/toolchain_build_mipsel \
+		$dir
+}
+
+#clean_build
+build 2.4 midge-cirouter
+#build 2.4 midge-full
+#clean_build
+#build 2.6 sigrand
+make_snapshot

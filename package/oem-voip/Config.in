@@ -1,0 +1,4 @@
+config BR2_PACKAGE_OEM_VOIP
+	tristate "oem-voip........... SIP VoIP drivers and routines"
+	default y if CONFIG_DEVEL
+	depends on BR2_LINUX_2_6_SIGRAND5120

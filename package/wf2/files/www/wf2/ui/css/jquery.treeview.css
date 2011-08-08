@@ -1,0 +1,81 @@
+.treeview, .treeview ul { 
+	padding: 0;
+	margin: 0;
+	list-style: none;
+}
+
+/* fix for IE6 */
+* html .hitarea {
+	display: inline;
+	float:none;
+}
+
+.treeview li { 
+	margin: 0;
+}
+
+.treeview .hitarea {
+	height: 16px;
+	width: 16px;
+	margin-left: -16px;
+	float: left;
+	cursor: pointer;
+}
+
+.treeview ul {
+	background-color: #e1f0ff;
+}
+
+.treeview .hover { color: red; cursor: pointer; }
+
+ul.treeview {
+	background-color: #e1f0ff;
+	border: 1px solid #0af;
+}
+
+ul.treeview li {
+	list-style: none;
+	line-height: 25px;
+	background-color: #a0d0ff;
+}
+
+ul.treeview li span {
+	display: block;
+	padding-left: 7px;
+	border-top: 1px solid #0af;
+	border-bottom: 1px solid #0af;
+}
+
+ul.treeview li li,
+ul.treeview li li li,
+ul.treeview li li li li,
+ul.treeview li li li li li {
+	margin: 0;
+	background-color: #e1f0ff;
+	background-image: none;
+	border: 1px solid #e1f0ff;
+}
+
+ul.treeview li li span,
+ul.treeview li li li span,
+ul.treeview li li li li span,
+ul.treeview li li li li li span {
+	margin: 0;
+	border: none;
+}
+
+ul.treeview li li span {
+	padding-left: 14px;
+}
+
+ul.treeview li li li span {
+	padding-left: 21px;
+}
+
+ul.treeview li li li li span {
+	padding-left: 28px;
+}
+
+ul.treeview li li li li li span {
+	padding-left: 35px;
+}

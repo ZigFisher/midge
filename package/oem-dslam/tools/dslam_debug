@@ -1,0 +1,67 @@
+#!/bin/sh
+# Sigrand DSLAM debug tool 
+# for Linux kernel v 2.6 drivers
+#
+#	Written 2009 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+CFG_PATH="/proc/sys/net/dslam_gpio/"
+
+#---------------------------------------------------------
+
+print_usage()
+{
+    echo "Sigrand DSLAM register debug tool"
+    echo "Usage:"
+    echo "  dslam_gebug <swnum> <addr>       - read register <addr>"
+    echo "  dslam_gebug <swnum> <addr> <val> - read register <addr>"
+}
+
+
+#---------------------------------------------------------
+
+# Check that interface name specifyed
+if [ $# -lt "2" ]; then
+    print_usage
+    exit
+fi
+
+swnum=$1
+addr=$2
+if [ $# -eq 3 ]; then
+	val=$3
+else 
+	val=""
+fi
+
+cdir=`pwd`
+
+if [ -z "$val" ]; then
+	cfg="$CFG_PATH/sw${1}_regread"
+	if [ ! -f "$cfg" ]; then
+		echo "$0: No such file $cfg"		
+		exit
+	fi
+	echo "$addr" > $cfg
+	tmp=`cat $cfg`
+	set $tmp
+	echo "Register($1)=$2"
+else
+	cfg="$CFG_PATH/sw${1}_regwrite"
+	if [ ! -f "$cfg" ]; then
+		echo "$0: No such file $cfg"
+		exit
+	fi
+	echo "$addr $val" > $cfg
+
+	cfg="$CFG_PATH/sw${1}_regread"
+	if [ ! -f "$cfg" ]; then
+		echo "$0: No such file $cfg"
+		exit
+	fi
+	echo "$addr" > $cfg
+	tmp=`cat $cfg`
+	set $tmp
+	echo "New Register($1)=$2"
+fi	

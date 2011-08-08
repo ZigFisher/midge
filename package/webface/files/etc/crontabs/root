@@ -1,0 +1,2 @@
+# syncs time
+15	* * * *	/etc/init.d/timesync start >/dev/null 2>/dev/null

@@ -1,0 +1,6 @@
+config BR2_PACKAGE_CONTEXT_HELP_OEM
+	prompt "Context help OEM ......... HTML ang image files for help sysytem"
+	tristate
+	default n if CONFIG_DEVEL
+	help
+		Package contains user manual, integrated into the web interface, OEM edition

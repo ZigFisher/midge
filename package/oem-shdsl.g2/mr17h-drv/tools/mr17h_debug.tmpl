@@ -1,0 +1,52 @@
+#!/bin/sh
+# Sigrand SG-17H debug tool 
+# for Linux kernel v 2.6 drivers
+#
+#	Written 2007 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+PCI_PATH="/sys/bus/pci/drivers/"@DRVNAME@
+
+#---------------------------------------------------------
+
+print_usage()
+{
+    echo "@MANUFACTURER@ @MODNAME@ IO window debug tool"
+    echo "Usage:"
+    echo "  sg16cfg <if> s <addr> <val>     - set register <addr> to <val>"
+    echo "  sg16cfg <if> r <addr> <count>   - read <count> bytes starting from <addr>"    
+}
+
+
+#---------------------------------------------------------
+
+# Check that interface name specifyed
+if [ $# -lt "4" ]; then
+    print_usage
+    exit
+fi
+
+cdir=`pwd`
+iface=$1
+
+if [ -d "$PCI_PATH/$1" ]; then
+	cd "$PCI_PATH/$1"
+else
+	echo "$0: No such device $1"
+	exit
+fi
+
+case $2 in
+    "s")
+	echo "$3 $4" > winwrite
+	cat winwrite
+	echo
+	;;
+    "r")
+	echo "$3 $4" > winread
+	cat winread
+	;;
+    *)
+	echo "Bad parameters!"
+esac

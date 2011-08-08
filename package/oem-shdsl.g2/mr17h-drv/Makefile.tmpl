@@ -1,0 +1,25 @@
+CFLAGS+=@CFLAGS@
+obj-m := @DRVNAME@.o
+@DRVNAME@-objs := sg17main.o sg17sci.o sdfe4_lib.o sg17debug.o sg17sysfs.o eoc_ring.o advlink.o
+
+@DRVNAME@.ko: sg17main.c sg17sci.c sdfe4_lib.c sg17debug.c sg17sysfs.c eoc_ring.c advlink.c
+	make -C  @KERNSRC@ SUBDIRS=$(PWD) modules CROSS_COMPILE=@CROSS_PREFIX@ 
+
+all: @DRVNAME@.ko
+
+install: @DRVNAME@.ko
+	install -m 644 @DRVNAME@.ko @INST_PATH@/lib/modules/@KERNVER@/
+	install -m 744 ./tools/mr17h_cfg @INST_PATH@/sbin/@TOOLNAME@
+	cp ./firmware/sg17.bin @INST_PATH@/lib/firmware/@DRVNAME@.bin
+	cp ./firmware/sg17v2.bin @INST_PATH@/lib/firmware/@DRVNAME@_v2.bin
+	[ "yes" != "@DEBUG@" ] || install -m 744 ./tools/mr17h_debug @INST_PATH@/sbin/
+
+clean:
+	rm --preserve-root -f .*.o*
+	rm --preserve-root -f .*.ko*
+	rm --preserve-root -f *.o*
+	rm --preserve-root -f *.ko*
+	rm --preserve-root -f *.mod.*
+	rm --preserve-root -f .sg16*
+	rm --preserve-root -f -R .tmp*
+

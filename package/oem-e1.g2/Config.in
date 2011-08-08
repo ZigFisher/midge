@@ -1,0 +1,13 @@
+config BR2_PACKAGE_SIGRAND_MR17G
+	prompt "mr17g ................. Sigrand MR17G E1 adapter driver"
+	tristate
+	default y if CONFIG_DEVEL
+	depends on BR2_LINUX_2_6_SIGRAND5120
+
+config BR2_PACKAGE_SIGRAND_MR17G_DEBUG
+	prompt "mr17g_debug ......... Sigrand MR17G E1 module Debug"
+	bool
+	default n
+	depends on BR2_LINUX_2_6_SIGRAND5120
+	depends on BR2_PACKAGE_SIGRAND_MR17G
+

@@ -1,0 +1,61 @@
+
+MEMORY
+{
+	rom : ORIGIN = 0xbe000000, LENGTH = 0x00100000
+    ram : ORIGIN = 0x81700000, LENGTH = 0x00100000    
+}
+
+SECTIONS
+{
+	
+	__ghsbegin_vectors = 0xbe000000;
+	
+	.rstvector      0xbe000000 : { *(.rstvector)	} > rom
+	.ram_int_vector 0xbe000080 : { *(.ram_int_vector)	} > rom
+	.c_data         0xbe000100 : { *(.c_data) } > rom
+	.rom_int_vector 0xbe000180 : { *(.rom_int_vector) } > rom
+	
+	.start 0xbe000200 :	{ 		
+		*(.start)
+		*(.initmem)
+		} > rom
+	
+	__ghsbegin_commun = 0x80000300;
+	__ghsbegin_copystart = 0x81700000;
+	
+	. = 0x81700000 + ADDR(.start) + SIZEOF(.start) - ADDR(.rstvector);
+	
+	_gp = ALIGN (0x8);
+	__ghsbegin_iram = ALIGN (0x8);
+	
+	.text ALIGN (0x8) : AT ((ADDR(.start) + SIZEOF(.start) + 8  - 1) & ~ (8  - 1)) 
+	{ 
+	 *(.iram)
+	 *(.text) 
+	 *(.data) 
+	 *(.sdata)
+	} > ram
+
+	.rodata : AT ((ADDR(.start) + SIZEOF(.start) + SIZEOF (.text)  + 8  - 1) & ~ (8  - 1)) 
+	{ *(.rodata) } > ram		
+	
+	__ghsend_copyend = ALIGN (0x8);
+	
+	__ghsbegin_bss = ALIGN (0x8);
+		
+	.bss ALIGN (0x8) (NOLOAD) :  
+	{		
+		*(.scommon)
+		*(COMMON)
+		*(.bss)
+		*(.sbss)
+		*(.reginfo)
+	} > ram
+	
+	__ghsend_bss = ALIGN (0x8);
+	
+	__ghsbegin_heap = ALIGN (0x8);
+	
+	.stack 0x81700000+0x000ffffc: { __ghsend_stack = .; } > ram
+	
+}

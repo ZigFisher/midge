@@ -1,0 +1,6 @@
+Package: ndyndns
+Priority: optional
+Section: net
+Source: http://ndyndns.googlecode.com/files/ndyndns-1.12.tar.gz
+Depends: curl
+Description: DynDNS.com update daemon

@@ -1,0 +1,6 @@
+#!/bin/sh
+
+mkdir -p /var/log
+/bin/touch /var/log/messages
+test -x /sbin/syslogd && /sbin/syslogd -m 0 -C
+test -x /sbin/klogd && /sbin/klogd

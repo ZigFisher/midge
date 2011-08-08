@@ -1,0 +1,21 @@
+diff -Naur linux-2.6.16/drivers/net/wan/hdlc_generic.c linux-2.6.16-new/drivers/net/wan/hdlc_generic.c
+--- linux-2.6.16/drivers/net/wan/hdlc_generic.c	2006-03-20 11:53:29.000000000 +0600
++++ linux-2.6.16-new/drivers/net/wan/hdlc_generic.c	2008-01-17 12:51:46.000000000 +0600
+@@ -282,7 +282,7 @@
+ struct net_device *alloc_hdlcdev(void *priv)
+ {
+ 	struct net_device *dev;
+-	dev = alloc_netdev(sizeof(hdlc_device), "hdlc%d", hdlc_setup);
++	dev = alloc_netdev(sizeof(hdlc_device), "E1_%d", hdlc_setup);
+ 	if (dev)
+ 		dev_to_hdlc(dev)->priv = priv;
+ 	return dev;
+@@ -290,7 +290,7 @@
+ 
+ int register_hdlc_device(struct net_device *dev)
+ {
+-	int result = dev_alloc_name(dev, "hdlc%d");
++	int result = dev_alloc_name(dev, "E1_%d");
+ 	if (result < 0)
+ 		return result;
+ 

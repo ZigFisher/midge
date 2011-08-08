@@ -1,0 +1,5 @@
+Package: wget
+Priority: optional
+Section: net
+Source: ftp://ftp.gnu.org/pub/gnu/wget/wget-1.11.4.tar.gz
+Description: Wget is a network utility to retrieve files from the Web.

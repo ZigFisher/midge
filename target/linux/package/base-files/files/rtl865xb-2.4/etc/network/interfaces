@@ -1,0 +1,42 @@
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 192.168.0.1
+    netmask 255.255.255.0
+    up ip a add 172.28.200.79/25 dev eth0
+    up ip r add default via 172.28.200.1
+    down ip r del default via 172.28.200.1
+    down ip a del 172.28.200.79/25 dev eth0
+
+auto eth1
+iface eth1 inet static
+    address 192.168.1.1
+    netmask 255.255.255.0
+
+auto eth2
+iface eth2 inet static
+    address 192.168.2.1
+    netmask 255.255.255.0
+
+auto eth3
+iface eth3 inet static
+    address 192.168.3.1
+    netmask 255.255.255.0
+
+auto eth4
+iface eth4 inet static
+    address 192.168.4.1
+    netmask 255.255.255.0
+
+#auto eth5.100
+#iface eth5.100 inet static
+#   address 192.168.0.1
+#   netmask 255.255.255.0
+#   pre-up ip link set eth5 up
+#   pre-up vconfig add eth5 100
+#   pre-up ip link set eth5.100 up
+#   up ip a add 192.168.100.1/24 dev eth5.100
+#   down ip a del 192.168.100.1/24 dev eth5.100
+#   post-down vconfig rem eth5.100

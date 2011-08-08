@@ -1,0 +1,9 @@
+config BR2_PACKAGE_FCGI
+	prompt "libfcgi............................ FastCGI library"
+	tristate
+	default n
+	help
+	  FastCGI application library
+	  
+	  http://www.fastcgi.com/
+

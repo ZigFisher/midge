@@ -1,0 +1,5 @@
+#!/bin/bash
+
+rm -rf *.o
+rm -rf tags
+rm -rf svi

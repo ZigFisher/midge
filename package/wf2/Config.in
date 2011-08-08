@@ -1,0 +1,9 @@
+
+config BR2_PACKAGE_WF2
+	prompt "webface2....................... Sigrand Webface 2"
+	tristate
+	default n
+	select BR2_PACKAGE_WEBFACE
+	help
+	  New web interface which uses AJAX. All HTML components rendered by JavaScript.
+	  

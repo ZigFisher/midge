@@ -1,0 +1,66 @@
+#!/bin/sh
+# Link Dependences between OS interfaces
+# This script needs MAP-file (/etc/link_deps/link.map)
+# which specifies what interface forces down other
+# Example:
+#	dsl0 E1_1 
+# means that when dsl0 goes down E1_1 should go down too
+# Each interface have it's own GO DOWN mean
+#	 
+# Written 2007 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+CONFIG_NAME=/etc/linkdeps/link.map
+sif=$1
+lstate=$2
+
+[ -f "${CONFIG_NAME}" ] || exit 0
+
+# Count lines in configuration file
+lines=`cat ${CONFIG_NAME} | wc -l`
+#echo "Lines in $CONFIG_NAME: $lines"
+
+l=1
+while [ "$l" -le "$lines" ]; do
+	cur_line=`head -n $l $CONFIG_NAME | tail -n 1`
+#	echo "Current line: $cur_line"
+	[ -n "$cur_line" ] || break
+	set $cur_line
+
+   	# configuration file syntax error
+	[ $# -ne "2" ] && l=`expr $l + 1` && continue
+	
+	# Search source interface in current line
+	tmp=`echo $cur_line | grep $sif`
+	if [ -z "$tmp" ]; then
+		l=`expr $l + 1`
+		continue
+	fi
+
+	# Force link of dest if down
+#	echo "Destination If = $2"
+	dif=$2
+	case $dif in
+	eth*)
+		[ -f "/proc/sys/net/adm5120sw/force_lnk_down_$dif" ] || exit -1
+		if [ "$lstate" -eq "0" ]; then
+		    echo 1 >  /proc/sys/net/adm5120sw/force_lnk_down_$dif
+		else
+		    echo 0 >  /proc/sys/net/adm5120sw/force_lnk_down_$dif
+		fi
+		;;
+	E1*)
+		ctrl_file="/sys/class/net/$dif/hw_private/force_link_down"
+		[ -f "$ctrl_file" ] || exit -1
+		if [ "$lstate" -eq "0" ]; then
+		    echo 1 > $ctrl_file
+#			echo `date`": Setup $dif 1 > $ctrl_file" >> /root/link_dep.log
+		else
+		    echo 0 > $ctrl_file
+#			echo `date`": Setup $dif 0 > $ctrl_file" >> /root/link_dep.log
+		fi
+		;;
+	esac
+	l=`expr $l + 1`
+done

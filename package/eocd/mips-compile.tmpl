@@ -1,0 +1,8 @@
+#!/bin/sh 
+
+export CC=@CROSS_PREFIX@gcc
+export CXX=@CROSS_PREFIX@g++
+
+#echo "CC=$CC"
+./configure --host=mipsel
+make

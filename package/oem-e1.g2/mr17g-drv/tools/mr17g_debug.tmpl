@@ -1,0 +1,78 @@
+#!/bin/sh
+# Sigrand SG-17H debug tool 
+# for Linux kernel v 2.6 drivers
+#
+#	Written 2007 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+# DRVNAME=@DRVNAME@
+DRVNAME=mr17g
+SYSFS_PATH="/sys/class/net/"
+
+#---------------------------------------------------------
+
+print_usage()
+{
+    echo "@MANUFACTURER@ @MODNAME@ IO window debug tool"
+    echo "Usage:"
+    echo " mr17g_debug <if> chip s <addr> <val>     - set pef22554 register <addr> to <val>"
+    echo " mr17g_debug <if> chip r <addr>           - read pef22554 <addr> register"
+    echo " mr17g_debug <if> s <addr> <val>          - set HDLC register <addr> to <val>"
+    echo " mr17g_debug <if> r <addr> [<count>]      - read <count> bytes starting from <addr> fo HDLC"
+}
+
+
+#---------------------------------------------------------
+
+CHIP_NUM=0
+
+if [ "$#" -eq 0 ]; then
+	print_usage
+	exit
+fi
+		
+
+cdir=`pwd`
+iface=$1
+
+if [ -d "$SYSFS_PATH/$1/hw_private" ]; then
+	cd "$SYSFS_PATH/$1/hw_private"
+else
+	echo "$0: No such device $1"
+	exit
+fi
+
+if [ "$2" = "chip" ]; then
+    case $3 in
+        "s")
+    	echo "$4 $5" > chip_writereg
+        echo "$4" > chip_readreg
+	    echo "Writing: REG($4) = "`cat chip_readreg`
+	    ;;
+        "r")
+        echo "$4" > chip_readreg
+	    echo "Reading REG($4) = "`cat chip_readreg`
+	    ;;
+        *)
+	    echo "Bad parameters!"
+    esac
+else
+    case $2 in
+        "s")
+    	echo "$3 $4" > winwrite
+	    cat winwrite
+    	echo
+	    ;;
+        "r")
+	    echo "$3 $4" > winread
+    	cat winread
+	    ;;
+        *)
+	    echo "Bad parameters!"
+    esac
+fi
+
+
+
+    

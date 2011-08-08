@@ -1,0 +1,29 @@
+CFLAGS+=@CFLAGS@
+obj-m := @DRVNAME@.o
+@DRVNAME@-objs := mr16g_hdlc.o
+
+@DRVNAME@.ko: mr16g_hdlc.c
+	make -C @KERNSRC@ SUBDIRS=$(PWD) modules CROSS_COMPILE=@CROSS_PREFIX@
+
+all: @DRVNAME@.ko
+
+install: @DRVNAME@.ko
+	install -m 600 @DRVNAME@.ko @INST_PATH@/lib/modules/@KERNVER@/
+	install -m 700 ./tools/mr16gcfg @INST_PATH@/sbin/@TOOLNAME@
+	[ "yes" != "@DEBUG@" ] || install -m 744 ./tools/mr16g_debug @INST_PATH@/sbin/@DBGTOOLNAME@
+
+clean:
+	rm --preserve-root -f .*.o*
+	rm --preserve-root -f .*.ko*
+	rm --preserve-root -f *.o*
+	rm --preserve-root -f *.ko*
+	rm --preserve-root -f *.mod.*
+	rm --preserve-root -f .sg16*
+	rm --preserve-root -f -R .tmp*
+
+mr16g_hdlc.s: mr16g_hdlc.c
+	make -C @KERNSRC@ CROSS_COMPILE=@CROSS_PREFIX@ $(PWD)/mr16g_hdlc.s
+
+debug: mr16g_hdlc.c mr16g_hdlc.s
+	@CROSS_PREFIX@objdump -d mr16g_hdlc.o > mr16g_hdlc.disasm
+

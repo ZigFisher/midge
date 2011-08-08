@@ -1,0 +1,5 @@
+#!/bin/sh
+# Loads parameters from /etc/sysctl.conf
+
+echo "Setting sysctl parameters"
+/sbin/sysctl -p >/dev/null

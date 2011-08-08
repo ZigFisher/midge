@@ -1,0 +1,49 @@
+MEMORY
+{
+    ram : ORIGIN = @@DRAM_MAP_LOADER_ADDR@@, LENGTH = 0x00100000
+    rom : ORIGIN = 0xbfc00000, LENGTH = 0x00100000
+}
+
+SECTIONS
+{
+	__ghsbegin_commun = 0x80000300;
+	
+	__ghsbegin_vectors = @@DRAM_MAP_LOADER_ADDR@@;
+	.rstvector      @@DRAM_MAP_LOADER_ADDR@@+0x000 : { *(.rstvector)    } > ram
+	.ram_int_vector @@DRAM_MAP_LOADER_ADDR@@+0x080 : { *(.ram_int_vector)   } > ram
+	.c_data         @@DRAM_MAP_LOADER_ADDR@@+0x100 : { *(.c_data) } > ram
+	.rom_int_vector @@DRAM_MAP_LOADER_ADDR@@+0x180 : { *(.rom_int_vector) } > ram
+
+	.start @@DRAM_MAP_LOADER_ADDR@@+0x00000300 : { *(.start) } > ram
+	
+	__ghsbegin_romrodata = (. + 8  - 1) & ~ (8  - 1);
+	__ghsbegin_copystart = (. + 8  - 1) & ~ (8  - 1);
+	__ghsend_copyend = (. + 8  - 1) & ~ (8  - 1);
+	_gp = (. + 8  - 1) & ~ (8  - 1);
+	
+	__ghsbegin_rodata = (. + 8  - 1) & ~ (8  - 1);
+	.rodata ALIGN (0x8) : { *(.rodata) } > ram
+	__ghsend_rodata = (. + 8  - 1) & ~ (8  - 1);
+		
+	__ghsbegin_iram = (. + 8  - 1) & ~ (8  - 1);
+	.iram ALIGN (0x8) : { *(.iram) } > ram
+	
+	.text ALIGN (0x8) : { *(.text) } > ram
+	.data ALIGN (0x8) : { *(.data) } > ram
+	.sdata ALIGN (0x8) : { *(.sdata) } > ram
+	
+	__ghsbegin_bss = (. + 8  - 1) & ~ (8  - 1);
+	.scommon ALIGN (0x8) : { *(.scommon) } > ram
+	.COMMON ALIGN (0x8) : { *(COMMON) } > ram
+	.bss ALIGN (0x8) : { *(.bss) } > ram
+	.sbss ALIGN (0x8) : { *(.sbss) } > ram
+	__ghsend_bss = (. + 8  - 1) & ~ (8  - 1);
+	__ghsbegin_heap = (. + 8  - 1) & ~ (8  - 1);
+	
+	.reginfo : { *(.reginfo) } > ram
+	.initmem : { *(.initmem) } > ram
+
+	_end_of_loader_ = .;
+	
+	.stack @@DRAM_MAP_LOADER_ADDR@@+0x000ffffc: { __ghsend_stack = .; } > ram
+}

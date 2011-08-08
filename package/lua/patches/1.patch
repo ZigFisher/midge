@@ -1,0 +1,106 @@
+Только в lua-5.1.2: .configured
+Только в lua-5.1.2: ipkg
+Только в lua-5.1.2: ipkg-install
+diff -ur lua-5.1.2-original/Makefile lua-5.1.2/Makefile
+--- lua-5.1.2-original/Makefile	2007-08-15 16:33:45.000000000 +0300
++++ lua-5.1.2/Makefile	2007-08-15 16:58:55.000000000 +0300
+@@ -12,7 +12,7 @@
+ # doc directory.) You may want to make these paths consistent with LUA_ROOT,
+ # LUA_LDIR, and LUA_CDIR in luaconf.h (and also with etc/lua.pc).
+ #
+-INSTALL_TOP= /usr/local
++INSTALL_TOP?= /usr/local
+ INSTALL_BIN= $(INSTALL_TOP)/bin
+ INSTALL_INC= $(INSTALL_TOP)/include
+ INSTALL_LIB= $(INSTALL_TOP)/lib
+@@ -33,7 +33,7 @@
+ FIND= find
+ INSTALL= install
+ MKDIR= mkdir
+-RANLIB= ranlib
++#RANLIB= ranlib
+ 
+ # == END OF USER SETTINGS. NO NEED TO CHANGE ANYTHING BELOW THIS LINE =========
+ 
+@@ -53,7 +53,7 @@
+ all:	$(PLAT)
+ 
+ $(PLATS) clean:
+-	cd src && $(MAKE) $@
++	cd src && $(MAKE) $@ MYCFLAGS="$(MYCFLAGS)" CC=$(CC) LD=$(LD)
+ 
+ test:	dummy
+ 	src/lua test/hello.lua
+Только в lua-5.1.2-original/: Makefile.orig
+Только в lua-5.1.2-original/: Makefile.rej
+Только в lua-5.1.2: .prepared
+Только в lua-5.1.2/src: lapi.o
+Только в lua-5.1.2/src: lauxlib.o
+Только в lua-5.1.2/src: lbaselib.o
+Только в lua-5.1.2/src: lcode.o
+Только в lua-5.1.2/src: ldblib.o
+Только в lua-5.1.2/src: ldebug.o
+Только в lua-5.1.2/src: ldo.o
+Только в lua-5.1.2/src: ldump.o
+Только в lua-5.1.2/src: lfunc.o
+Только в lua-5.1.2/src: lgc.o
+Только в lua-5.1.2/src: liblua.a
+Только в lua-5.1.2/src: linit.o
+Только в lua-5.1.2/src: liolib.o
+Только в lua-5.1.2/src: llex.o
+Только в lua-5.1.2/src: lmathlib.o
+Только в lua-5.1.2/src: lmem.o
+Только в lua-5.1.2/src: loadlib.o
+Только в lua-5.1.2/src: lobject.o
+Только в lua-5.1.2/src: lopcodes.o
+Только в lua-5.1.2/src: loslib.o
+Только в lua-5.1.2/src: lparser.o
+Только в lua-5.1.2/src: lstate.o
+Только в lua-5.1.2/src: lstring.o
+Только в lua-5.1.2/src: lstrlib.o
+Только в lua-5.1.2/src: ltable.o
+Только в lua-5.1.2/src: ltablib.o
+Только в lua-5.1.2/src: ltm.o
+Только в lua-5.1.2/src: lua
+Только в lua-5.1.2/src: luac
+Только в lua-5.1.2/src: luac.o
+Только в lua-5.1.2/src: lua.o
+Только в lua-5.1.2/src: lundump.o
+Только в lua-5.1.2/src: lvm.o
+Только в lua-5.1.2/src: lzio.o
+diff -ur lua-5.1.2-original/src/Makefile lua-5.1.2/src/Makefile
+--- lua-5.1.2-original/src/Makefile	2007-03-25 17:49:23.000000000 +0300
++++ lua-5.1.2/src/Makefile	2007-08-15 16:57:07.000000000 +0300
+@@ -7,16 +7,16 @@
+ # Your platform. See PLATS for possible values.
+ PLAT= none
+ 
+-CC= gcc
++#CC= gcc
+ CFLAGS= -O2 -Wall $(MYCFLAGS)
+-AR= ar rcu
+-RANLIB= ranlib
++#AR= ar rcu
++#RANLIB= ranlib
+ RM= rm -f
+ LIBS= -lm $(MYLIBS)
+ 
+-MYCFLAGS=
+-MYLDFLAGS=
+-MYLIBS=
++#MYCFLAGS=
++#MYLDFLAGS=
++#MYLIBS=
+ 
+ # == END OF USER SETTINGS. NO NEED TO CHANGE ANYTHING BELOW THIS LINE =========
+ 
+@@ -96,7 +96,7 @@
+ 	$(MAKE) all MYCFLAGS=
+ 
+ linux:
+-	$(MAKE) all MYCFLAGS=-DLUA_USE_LINUX MYLIBS="-Wl,-E -ldl -lreadline -lhistory -lncurses"
++	$(MAKE) all #MYCFLAGS=-DLUA_USE_LINUX MYLIBS="-Wl,-E -ldl -lreadline -lhistory -lncurses"
+ 
+ macosx:
+ 	$(MAKE) all MYCFLAGS=-DLUA_USE_MACOSX
+Только в lua-5.1.2/src: print.o

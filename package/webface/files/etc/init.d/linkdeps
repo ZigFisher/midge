@@ -1,0 +1,4 @@
+#!/bin/sh
+# Update linkdeps file
+
+/etc/templates/Update linkdeps

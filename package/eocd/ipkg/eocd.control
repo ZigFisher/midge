@@ -1,0 +1,4 @@
+Package: eocd
+Priority: optional
+Section: net
+Description: shdsl EOC channel daemon

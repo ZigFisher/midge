@@ -1,0 +1,19 @@
+*** mc/doc/Makefile.in.orig	2008-11-14 19:19:42.000000000 +0200
+--- mc/doc/Makefile.in	2008-11-14 19:24:49.000000000 +0200
+***************
+*** 230,236 ****
+  SUBDIRS = $(DOC_LINGUAS)
+  @USE_MCFS_FALSE@man_MANS = mc.1 mcedit.1 mcview.1
+  @USE_MCFS_TRUE@man_MANS = mc.1 mcedit.1 mcview.1 mcserv.8
+! pkgdata_DATA = mc.hlp
+  EXTRA_DIST = xnc.hlp
+  CLEANFILES = $(pkgdata_DATA)
+  all: all-recursive
+--- 230,236 ----
+  SUBDIRS = $(DOC_LINGUAS)
+  @USE_MCFS_FALSE@man_MANS = mc.1 mcedit.1 mcview.1
+  @USE_MCFS_TRUE@man_MANS = mc.1 mcedit.1 mcview.1 mcserv.8
+! pkgdata_DATA = 
+  EXTRA_DIST = xnc.hlp
+  CLEANFILES = $(pkgdata_DATA)
+  all: all-recursive

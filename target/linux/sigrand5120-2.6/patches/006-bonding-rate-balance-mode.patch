@@ -1,0 +1,340 @@
+diff -Naur linux-2.6.16-old/drivers/net/bonding/bonding.h linux-2.6.16-new/drivers/net/bonding/bonding.h
+--- linux-2.6.16-old/drivers/net/bonding/bonding.h	2006-03-20 11:53:29.000000000 +0600
++++ linux-2.6.16-new/drivers/net/bonding/bonding.h	2008-04-15 01:06:49.000000000 +0700
+@@ -160,6 +160,9 @@
+ 	u8     perm_hwaddr[ETH_ALEN];
+ 	struct ad_slave_info ad_info; /* HUGE - better to dynamically alloc */
+ 	struct tlb_slave_info tlb_info;
++	// Sigrand mode related parameters
++	struct timeval tv;
++	int rate;
+ };
+ 
+ /*
+@@ -198,6 +201,8 @@
+ 	struct   bond_params params;
+ 	struct   list_head vlan_list;
+ 	struct   vlan_group *vlgrp;
++	// rate-balance mode
++	struct work_struct wqueue;
+ };
+ 
+ /**
+@@ -262,5 +267,8 @@
+ void bond_select_active_slave(struct bonding *bond);
+ void bond_change_active_slave(struct bonding *bond, struct slave *new_active);
+ 
++// RATE-BALANCED mode
++void ratebalance_update(void *data);
++
+ #endif /* _LINUX_BONDING_H */
+ 
+diff -Naur linux-2.6.16-old/drivers/net/bonding/bond_main.c linux-2.6.16-new/drivers/net/bonding/bond_main.c
+--- linux-2.6.16-old/drivers/net/bonding/bond_main.c	2006-03-20 11:53:29.000000000 +0600
++++ linux-2.6.16-new/drivers/net/bonding/bond_main.c	2008-04-15 01:07:46.000000000 +0700
+@@ -115,7 +115,7 @@
+ MODULE_PARM_DESC(mode, "Mode of operation : 0 for balance-rr, "
+ 		       "1 for active-backup, 2 for balance-xor, "
+ 		       "3 for broadcast, 4 for 802.3ad, 5 for balance-tlb, "
+-		       "6 for balance-alb");
++		       "6 for balance-alb, 7 for balance-rate" );
+ module_param(primary, charp, 0);
+ MODULE_PARM_DESC(primary, "Primary network device to use");
+ module_param(lacp_rate, charp, 0);
+@@ -162,6 +162,7 @@
+ {	"802.3ad",		BOND_MODE_8023AD},
+ {	"balance-tlb",		BOND_MODE_TLB},
+ {	"balance-alb",		BOND_MODE_ALB},
++{	"balance-rate",		BOND_MODE_RATEB},
+ {	NULL,			-1},
+ };
+ 
+@@ -194,6 +195,8 @@
+ 		return "transmit load balancing";
+ 	case BOND_MODE_ALB:
+ 		return "adaptive load balancing";
++	case BOND_MODE_RATEB:
++		return "rate adaptive load balancing";
+ 	default:
+ 		return "unknown";
+ 	}
+@@ -1186,6 +1189,7 @@
+ }
+ 
+ /* enslave device <slave> to bond device <master> */
++//---------------------------
+ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
+ {
+ 	struct bonding *bond = bond_dev->priv;
+@@ -1195,6 +1199,7 @@
+ 	int link_reporting;
+ 	int old_features = bond_dev->features;
+ 	int res = 0;
++	int rate = -1;
+ 
+ 	if (!bond->params.use_carrier && slave_dev->ethtool_ops == NULL &&
+ 		slave_dev->do_ioctl == NULL) {
+@@ -1522,6 +1527,7 @@
+ 	       new_slave->state == BOND_STATE_ACTIVE ? "n active" : " backup",
+ 	       new_slave->link != BOND_LINK_DOWN ? "n up" : " down");
+ 
++
+ 	/* enslave is successful */
+ 	return 0;
+ 
+@@ -3795,6 +3801,7 @@
+ 	return res;
+ }
+ 
++
+ static int bond_xmit_roundrobin(struct sk_buff *skb, struct net_device *bond_dev)
+ {
+ 	struct bonding *bond = bond_dev->priv;
+@@ -3817,7 +3824,7 @@
+ 	}
+ 
+ 	bond_for_each_slave_from(bond, slave, i, start_at) {
+-		if (IS_UP(slave->dev) &&
++		if ( IS_UP(slave->dev) &&
+ 		    (slave->link == BOND_LINK_UP) &&
+ 		    (slave->state == BOND_STATE_ACTIVE)) {
+ 			res = bond_dev_queue_xmit(bond, skb, slave->dev);
+@@ -3840,6 +3847,164 @@
+ 	return 0;
+ }
+ 
++/*----------- Rate balanced mode ---------------*/
++
++void
++ratebalance_update(void *data)
++{
++	struct bonding *bond = (struct bonding *)data;
++	struct slave *slave, *start_at;
++	int i;
++
++//	printk(KERN_NOTICE"ratebalance_update: start\n");
++
++	read_lock(&bond->lock);
++	if (!BOND_IS_OK(bond)) {
++		goto out;
++	}
++
++	read_lock(&bond->curr_slave_lock);
++	slave = start_at = bond->curr_active_slave;
++	read_unlock(&bond->curr_slave_lock);
++
++	if (!slave) {
++		goto out;
++	}
++
++	bond_for_each_slave_from(bond, slave, i, start_at) {
++		slave->rate = -1;
++		if ( IS_UP(slave->dev) && (slave->link == BOND_LINK_UP) 
++				&& (slave->state == BOND_STATE_ACTIVE) ) {
++			static int (* ioctl)(struct net_device *, struct ifreq *, int);
++			struct ifreq ifr;
++			int rate;
++			ioctl = slave->dev->do_ioctl;
++			strncpy(ifr.ifr_name,slave->dev->name,IFNAMSIZ);
++			ifr.ifr_data = (char*)&rate;
++			if (!ioctl || (IOCTL(slave->dev,&ifr,SIOCGLRATE) < 0)){
++			    continue;
++			}
++			// printk(KERN_NOTICE"RATEBALANCE mode: rate=%d\n",rate);
++			slave->rate = rate;
++		}
++	}
++out:
++	read_unlock(&bond->lock);
++	schedule_delayed_work(&bond->wqueue,5*HZ);
++}
++
++
++int
++compare_tv(struct timeval *tv1,struct timeval *tv2)
++{
++	if( tv1->tv_sec > tv2->tv_sec ){
++		return -1;
++	}else if( tv1->tv_sec < tv2->tv_sec ){
++		return 1;
++	}else{
++		if( tv1->tv_usec > tv2->tv_usec ){
++			return -1;
++		}else if( tv1->tv_usec < tv2->tv_usec ){
++			return 1;
++		}else
++			return 0;
++	}
++}	
++
++void
++add_tv(struct timeval *tv,unsigned int usec){
++	usec += tv->tv_usec;
++	tv->tv_sec += usec / 1000000;
++	tv->tv_usec = usec % 1000000;
++}
++/*
++unsigned int
++div_tv(struct timeval *tv,struct timeval *tv1){
++	
++	unsigned int usec = tv1->tv_usec - tv->tv_usec;
++	unsigned int sec = tv1->tv_sec - tv->tv_sec;
++	if( usec < 0 ){
++		sec--;
++		usec += 1000000;
++	}
++	return sec*1000000 + usec;
++}
++*/
++
++static int bond_xmit_ratebalanced(struct sk_buff *skb, struct net_device *bond_dev)
++{
++	struct bonding *bond = bond_dev->priv;
++	struct slave *slave, *start_at, *snd_slave = NULL;
++	int i;
++	int res = 1;
++	struct timeval ctv,snd_tv;
++
++	read_lock(&bond->lock);
++
++	if (!BOND_IS_OK(bond)) {
++		goto out;
++	}
++
++	read_lock(&bond->curr_slave_lock);
++	slave = start_at = bond->curr_active_slave;
++	read_unlock(&bond->curr_slave_lock);
++
++	if (!slave) {
++		goto out;
++	}
++
++	do_gettimeofday(&ctv);
++
++	bond_for_each_slave_from(bond, slave, i, start_at) {
++		if ( IS_UP(slave->dev) && (slave->link == BOND_LINK_UP) 
++				&& (slave->state == BOND_STATE_ACTIVE)) {
++			unsigned int transm_time;
++			if( slave->rate <= 0 ){ 
++				// Rate unknown - skip
++				continue;
++			}
++			transm_time = (skb->len*8*1000)/slave->rate;
++
++			if( compare_tv(&ctv,&slave->tv) < 0 ){
++			//	printk(KERN_NOTICE"Tune tv for %s\n",slave->dev->name);
++				slave->tv = ctv;
++			}
++
++			if( !snd_slave ){
++				snd_slave = slave;
++				snd_tv = slave->tv;
++				add_tv(&snd_tv,transm_time);
++			}else{
++				struct timeval tmp_tv = slave->tv;
++				add_tv(&tmp_tv,transm_time);
++				if( compare_tv(&snd_tv,&tmp_tv) < 0 ){
++					snd_tv = tmp_tv;
++					snd_slave = slave;
++				}
++			}
++		}
++	}
++
++/*
++	printk(KERN_NOTICE"%s(%s): res: %d.%d\n",__FUNCTION__,snd_slave->dev->name,
++		(unsigned int)snd_tv.tv_sec,(unsigned int)snd_tv.tv_usec);
++*/
++
++	if( snd_slave ){
++		snd_slave->tv = snd_tv;
++		res = bond_dev_queue_xmit(bond, skb, snd_slave->dev);
++	}
++
++out:
++	if (res) {
++		/* no suitable interface, frame not sent */
++		dev_kfree_skb(skb);
++	}
++	read_unlock(&bond->lock);
++	return 0;
++}
++
++
+ static void bond_activebackup_xmit_copy(struct sk_buff *skb,
+                                         struct bonding *bond,
+                                         struct slave *slave)
+@@ -4072,6 +4237,9 @@
+ 		bond_dev->hard_start_xmit = bond_alb_xmit;
+ 		bond_dev->set_mac_address = bond_alb_set_mac_address;
+ 		break;
++	case BOND_MODE_RATEB: // rate balanced mode
++		bond_dev->hard_start_xmit = bond_xmit_ratebalanced; 
++		break;
+ 	default:
+ 		/* Should never happen, mode already checked */
+ 		printk(KERN_ERR DRV_NAME
+@@ -4185,6 +4353,11 @@
+ #ifdef CONFIG_PROC_FS
+ 	bond_remove_proc_entry(bond);
+ #endif
++	if( bond_mode == BOND_MODE_RATEB ){
++		// Stop monitoring
++		cancel_delayed_work(&bond->wqueue);
++	}
++
+ }
+ 
+ /* Unregister and free all bond devices.
+@@ -4532,6 +4705,13 @@
+ 
+ 	rtnl_unlock(); /* allows sysfs registration of net device */
+ 	res = bond_create_sysfs_entry(bond_dev->priv);
++
++	if( bond_mode == BOND_MODE_RATEB ){
++		struct bonding *bdev = (struct bonding *)bond_dev->priv;
++		INIT_WORK(&bdev->wqueue,ratebalance_update,(void*)bdev);
++		schedule_delayed_work(&bdev->wqueue,HZ/2);
++	}
++
+ 	goto done;
+ out_bond:
+ 	bond_deinit(bond_dev);
+@@ -4550,6 +4730,7 @@
+ 	char new_bond_name[8];  /* Enough room for 999 bonds at init. */
+ 
+ 	printk(KERN_INFO "%s", version);
++	printk(KERN_INFO "Updated mode list: Rate Balance mode (7)\n");
+ 
+ 	res = bond_check_params(&bonding_defaults);
+ 	if (res) {
+@@ -4564,6 +4745,7 @@
+ 		res = bond_create(new_bond_name,&bonding_defaults, NULL);
+ 		if (res)
+ 			goto err;
++
+ 	}
+ 
+ 	res = bond_create_sysfs();
+diff -Naur linux-2.6.16-old/include/linux/if_bonding.h linux-2.6.16-new/include/linux/if_bonding.h
+--- linux-2.6.16-old/include/linux/if_bonding.h	2006-03-20 11:53:29.000000000 +0600
++++ linux-2.6.16-new/include/linux/if_bonding.h	2008-04-15 01:06:49.000000000 +0700
+@@ -61,6 +61,10 @@
+ #define BOND_INFO_QUERY_OLD		(SIOCDEVPRIVATE + 12)
+ #define BOND_CHANGE_ACTIVE_OLD		(SIOCDEVPRIVATE + 13)
+ 
++// For RATE-BALANCED mode
++#define SIOCGLRATE	(SIOCDEVPRIVATE + 14)
++
++
+ #define BOND_CHECK_MII_STATUS	(SIOCGMIIPHY)
+ 
+ #define BOND_MODE_ROUNDROBIN	0
+@@ -70,6 +74,7 @@
+ #define BOND_MODE_8023AD        4
+ #define BOND_MODE_TLB           5
+ #define BOND_MODE_ALB		6 /* TLB + RLB (receive load balancing) */
++#define BOND_MODE_RATEB		7 /* Rate adaptive load balancing */
+ 
+ /* each slave's link has 4 states */
+ #define BOND_LINK_UP    0           /* link is up and running */

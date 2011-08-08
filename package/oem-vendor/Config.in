@@ -1,0 +1,190 @@
+#-------------- General OEM information ------------------------#
+comment "General OEM information"
+config BR2_SIGRAND_OEM_MANUFACTURER
+prompt "Manufacturer"
+string
+default "Sigrand"
+
+config BR2_SIGRAND_OEM_URL
+prompt "Manufacturer URL"
+string
+default "http://www.sigrand.ru"
+
+config BR2_SIGRAND_OEM_HOSTNAME
+prompt "Default Hostname"
+string
+default "sigrand"
+
+config BR2_SIGRAND_OEM_SYSNAME
+prompt "Default system name"
+string
+default "Sigrand"
+
+config BR2_SIGRAND_OEM_IFPFX
+prompt "OEM interface prefix in module names."
+string
+default ""
+
+#-------------- OEM Logos ------------------------#
+comment "Logotypes"
+
+config BR2_SIGRAND_OEM_LOGO
+prompt "Left up corner logo"
+string
+default "default"
+
+config BR2_SIGRAND_OEM_HEADERBG
+prompt "Header background"
+string
+default "default"
+
+config BR2_SIGRAND_OEM_BGROUND
+prompt "Default system name"
+string
+default "default"
+
+config BR2_SIGRAND_OEM_WF2_HEADER_LOGO
+prompt "WF2: header logo"
+string
+default "default"
+
+config BR2_SIGRAND_OEM_WF2_BOTTOM_LOGO
+prompt "WF2: bottom logo"
+string
+default "default"
+
+#-------------- OEM SHDSL modules ------------------------#
+
+comment "MR17H SHDSL module"
+config BR2_SIGRAND_OEM_MR17H
+prompt "MR17H SHDSL module name"
+string
+default "MR17H"
+
+config BR2_SIGRAND_OEM_MR17H_V1SFX
+prompt "MR17H SHDSL module version 1 suffix"
+string
+default ""
+
+config BR2_SIGRAND_OEM_MR17H_V2SFX
+prompt "MR17H SHDSL module version 2 suffix"
+string
+default "+"
+
+config BR2_SIGRAND_OEM_MR17H_PWRSFX
+prompt "MR17H SHDSL module power source suffix"
+string
+default "P2"
+
+config BR2_SIGRAND_OEM_MR17H_DRV
+prompt "MR17H SHDSL module driver name"
+string
+default "mr17h"
+
+config BR2_SIGRAND_OEM_MR17H_TOOL
+prompt "MR17H SHDSL configuration tool name"
+string
+default "mr17h_cfg"
+
+config BR2_SIGRAND_OEM_MR17H_DBGTOOL
+prompt "MR17H SHDSL debugging tool name"
+string
+default "mr17h_debug"
+
+#-------------
+
+comment "MR16H SHDSL module"
+config BR2_SIGRAND_OEM_MR16H
+prompt "MR16H SHDSL module name"
+string
+default "MR16H"
+
+config BR2_SIGRAND_OEM_MR16H_DRV
+prompt "MR16H SHDSL module driver name"
+string
+default "mr16h"
+
+config BR2_SIGRAND_OEM_MR16H_TOOL
+prompt "MR16H SHDSL configuration tool name"
+string
+default "mr16h_cfg"
+
+config BR2_SIGRAND_OEM_MR16H_DBGTOOL
+prompt "MR16H SHDSL debugging tool name"
+string
+default "mr16h_debug"
+
+#-------------- OEM E1 modules ------------------------#
+
+comment "MR16G E1 module"
+config BR2_SIGRAND_OEM_MR16G
+prompt "MR16G E1 module name"
+string
+default "MR16G"
+
+config BR2_SIGRAND_OEM_MR16G_DRV
+prompt "MR16G E1 module driver name"
+string
+default "mr16g"
+
+config BR2_SIGRAND_OEM_MR16G_TOOL
+prompt "MR16G E1 configuration tool name"
+string
+default "mr16g_cfg"
+
+config BR2_SIGRAND_OEM_MR16G_DBGTOOL
+prompt "MR16G E1 debugging tool name"
+string
+default "mr16g_debug"
+
+#-------------
+
+comment "MR17G E1 module"
+config BR2_SIGRAND_OEM_MR17G
+prompt "MR17G E1 module name"
+string
+default "MR17G"
+
+config BR2_SIGRAND_OEM_MR17G_DRV
+prompt "MR17G E1 module driver name"
+string
+default "mr17g"
+
+config BR2_SIGRAND_OEM_MR17G_TOOL
+prompt "MR17G E1 configuration tool name"
+string
+default "mr17g_cfg"
+
+config BR2_SIGRAND_OEM_MR17G_DBGTOOL
+prompt "MR17G E1 debugging tool name"
+string
+default "mr17g_debug"
+
+
+#-------------- OEM RS232 modules ------------------------#
+
+comment "MR17S RS232 module"
+config BR2_SIGRAND_OEM_MR17S
+prompt "MR17S RS232 module name"
+string
+default "MR17S"
+
+config BR2_SIGRAND_OEM_MR17S_DRV
+prompt "MR17S RS232 module driver name"
+string
+default "mr17s"
+
+config BR2_SIGRAND_OEM_MR17S_DBGTOOL
+prompt "MR17S RS232 debugging tool name"
+string
+default "mr17s_debug"
+
+config BR2_SIGRAND_OEM_MR17S_TOOL
+prompt "MR17S RS232 tool name"
+string
+default "mr17s_cfg"
+
+config BR2_SIGRAND_OEM_MR17S_TTYNAME
+prompt "MR17S RS232 tty name"
+string
+default "ttyRS"

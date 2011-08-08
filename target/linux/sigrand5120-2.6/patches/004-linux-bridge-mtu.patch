@@ -1,0 +1,27 @@
+diff -Naur linux-2.6.16/net/bridge/br.c linux-2.6.16-new/net/bridge/br.c
+--- linux-2.6.16/net/bridge/br.c	2007-11-25 18:49:33.000000000 +0600
++++ linux-2.6.16-new/net/bridge/br.c	2007-11-25 19:02:57.000000000 +0600
+@@ -27,6 +27,7 @@
+ static int __init br_init(void)
+ {
+ 	br_fdb_init();
++	printk("Load linux Bridge driver (VLAN capable)\n");
+ 
+ #ifdef CONFIG_BRIDGE_NETFILTER
+ 	if (br_netfilter_init())
+diff -Naur linux-2.6.16/net/bridge/br_forward.c linux-2.6.16-new/net/bridge/br_forward.c
+--- linux-2.6.16/net/bridge/br_forward.c	2007-11-25 18:49:33.000000000 +0600
++++ linux-2.6.16-new/net/bridge/br_forward.c	2007-11-25 18:55:54.000000000 +0600
+@@ -29,10 +29,11 @@
+ 	return 1;
+ }
+ 
++#define VLAN_EXT 18
+ int br_dev_queue_push_xmit(struct sk_buff *skb)
+ {
+ 	/* drop mtu oversized packets except tso */
+-	if (skb->len > skb->dev->mtu && !skb_shinfo(skb)->tso_size)
++	if ( (skb->len > (skb->dev->mtu + VLAN_EXT) ) && !skb_shinfo(skb)->tso_size)
+ 		kfree_skb(skb);
+ 	else {
+ #ifdef CONFIG_BRIDGE_NETFILTER

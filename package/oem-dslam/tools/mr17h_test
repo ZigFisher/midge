@@ -1,0 +1,10 @@
+#!/bin/sh
+# Sigrand DSLAM debug tool 
+# for Linux kernel v 2.6 drivers
+#
+#	Written 2009 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+set 1 2 3 4
+echo "$1 $4 $2"

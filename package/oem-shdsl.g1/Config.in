@@ -1,0 +1,12 @@
+config BR2_PACKAGE_SIGRAND_MR16H
+	prompt "mr16h ................. Sigrand MR16H SHDSL module driver"
+	tristate
+	default y if CONFIG_DEVEL
+	depends on BR2_LINUX_2_6_SIGRAND5120
+
+config BR2_PACKAGE_SIGRAND_MR16H_UEVENTS
+	prompt "mr16h_linkevt ....... Sigrand MR16H link change events"
+	bool
+	default n
+	depends on BR2_PACKAGE_SIGRAND_MR16H
+	depends on BR2_PACKAGE_SIGRAND_LINKDEPS

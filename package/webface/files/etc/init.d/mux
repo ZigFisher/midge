@@ -1,0 +1,50 @@
+#!/bin/sh
+
+. /bin/midge_functions
+
+MXCONFIG=`which mxconfig`
+
+# turn on multiplexing
+start(){
+	# for each interface
+	for i in `kdb get sys_mux_ifaces`; do
+		unset clkab clkm clkr mxen mxsmap mxrate rfs rline tfs tline timeslots
+		eval `kdb sls sys_mux_${i}_`
+		
+		if [ "x$mxen" = "x1" ]; then
+			[ -n "$mxsmap" ] && timeslots="--mxsmap $mxsmap" || timeslots="--mxrate $mxrate"
+			
+			$MXCONFIG --iface $i --mxen "1" --clkab $clkab --clkm $clkm --clkr $clkr --rfs $rfs \
+--rline $rline --tfs $tfs --tline $tline $timeslots
+
+			# mxconfig can change mxsmap parameter, so update value, saved in KDB
+			if [ "x${i%%_[0-9]*}x" = "xE1x" ]; then
+				unset mxsmap
+				eval `mxconfig --iface $i --list |grep mxsmap |sed "s/$i://g"`
+				kdb set "sys_mux_${i}_mxsmap=$mxsmap"
+			fi
+		else
+			$MXCONFIG --iface $i --mxen "0"
+		fi
+	done
+}
+
+# turn off multiplexing
+stop(){
+	# for each interface
+	for i in $ifaces; do
+		$MXCONFIG "--iface $i --mxen 0"
+	done
+}
+
+case $1 in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	*)
+		start
+		;;
+esac

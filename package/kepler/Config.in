@@ -1,0 +1,9 @@
+config BR2_PACKAGE_KEPLER
+	prompt "kepler............................ Kepler is a Web development platform."
+	tristate
+	default n
+	help
+	  Kepler is a Web development platform.
+	  
+	  http://keplerproject.org/
+

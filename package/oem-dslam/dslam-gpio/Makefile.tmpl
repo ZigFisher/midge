@@ -1,0 +1,22 @@
+CFLAGS+=@CFLAGS@
+obj-m := dslam_gpio.o
+
+dslam_gpio.ko: dslam_gpio.c
+	make -C @KERNSRC@ SUBDIRS=$(PWD) modules CROSS_COMPILE=@CROSS_PREFIX@ 
+
+all: dslam_gpio.ko
+
+install: dslam_gpio.ko
+	install -m 644 dslam_gpio.ko @INST_PATH@/lib/modules/@KERNVER@/
+#	install -m 744 ./tools/mr17h_cfg @INST_PATH@/sbin/@TOOLNAME@
+#	[ "yes" != "@DEBUG@" ] || install -m 744 ./tools/mr17h_debug @INST_PATH@/sbin/
+
+clean:
+	rm --preserve-root -f .*.o*
+	rm --preserve-root -f .*.ko*
+	rm --preserve-root -f *.o*
+	rm --preserve-root -f *.ko*
+	rm --preserve-root -f *.mod.*
+	rm --preserve-root -f .sg16*
+	rm --preserve-root -f -R .tmp*
+

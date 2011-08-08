@@ -1,0 +1,5 @@
+config BR2_PACKAGE_SIGRAND_EOCD
+	prompt "eocd ................. Sigrand EOC channel daemon"
+	tristate
+	default y if CONFIG_DEVEL
+	depends on BR2_LINUX_2_6_SIGRAND5120

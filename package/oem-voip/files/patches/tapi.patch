@@ -1,0 +1,187 @@
+diff -ruiN tapi_pure/include/drv_tapi_io.h tapi/include/drv_tapi_io.h
+--- tapi_pure/include/drv_tapi_io.h	2009-06-29 16:17:03.000000000 +0700
++++ tapi/include/drv_tapi_io.h	2009-06-29 16:17:03.000000000 +0700
+@@ -3978,7 +3978,9 @@
+    /** Line mode type FXS automatic NB/WB switching for analog channel. */
+    IFX_TAPI_LINE_TYPE_FXS_AUTO = 2,
+    /** Line mode type FXO narrowband sampling for analog channel. */
+-   IFX_TAPI_LINE_TYPE_FXO_NB = 3
++   IFX_TAPI_LINE_TYPE_FXO_NB = 3,
++   /** Line mode type VF for analog channel. */
++   IFX_TAPI_LINE_TYPE_VF = 4
+ } IFX_TAPI_LINE_TYPE_t;
+ 
+ /* map the old names to the NB names */
+@@ -7430,6 +7432,8 @@
+    IFX_uint16_t nInterDigitTime;
+    /** Play time for each digit, in ms. Default 100 ms.*/
+    IFX_uint16_t nDigitPlayTime;
++   /** Dial in pulse mode. Default is off (IFX_FALSE).*/
++   IFX_boolean_t pulseMode;
+ } IFX_TAPI_FXO_DIAL_CFG_t;
+ 
+ /** Hook confinguration for FXO, used in \ref IFX_TAPI_FXO_FLASH_CFG_SET. */
+diff -ruiN tapi_pure/include/drv_tapi_ll_interface.h tapi/include/drv_tapi_ll_interface.h
+--- tapi_pure/include/drv_tapi_ll_interface.h	2009-06-29 16:17:03.000000000 +0700
++++ tapi/include/drv_tapi_ll_interface.h	2009-06-29 16:17:03.000000000 +0700
+@@ -893,12 +893,14 @@
+    /** Configure the DTMF tone generator
+    \param nInterDigitTime Inter-digit-time in ms
+    \param nDigitPlayTime  Active digit-play-time in ms
++   \param pulseMode       Dial in pulse or tone modes
+    \return
+    IFX_SUCCESS if successful
+    IFX_ERROR if an error occured */
+    IFX_int32_t  (*DTMFG_Cfg  )              (IFX_TAPI_LL_CH_t *pLLCh,
+                                              IFX_uint16_t nInterDigitTime,
+-                                             IFX_uint16_t nDigitPlayTime);
++                                             IFX_uint16_t nDigitPlayTime,
++                                             IFX_boolean_t pulseMode);
+ 
+    /** Start the DTMF tone generator
+    \param pLLCh           Pointer to Low-level channel structure
+@@ -908,6 +910,7 @@
+    IFX_SUCCESS if successful
+    IFX_ERROR if an error occured */
+    IFX_int32_t  (*DTMFG_Start)              (IFX_TAPI_LL_CH_t *pLLCh,
++                                             IFX_uint16_t nDAA,
+                                              IFX_uint8_t nDigits,
+                                              IFX_char_t  *data);
+ 
+diff -ruiN tapi_pure/src/drv_tapi_event.c tapi/src/drv_tapi_event.c
+--- tapi_pure/src/drv_tapi_event.c	2009-06-29 16:17:03.000000000 +0700
++++ tapi/src/drv_tapi_event.c	2009-06-29 16:17:03.000000000 +0700
+@@ -64,7 +64,7 @@
+ #ifdef TAPI_EXT_KEYPAD
+ IFX_return_t TAPI_EXT_EVENT_Key_Handler (TAPI_CHANNEL * pChannel,
+                                          IFX_TAPI_EVENT_t * pTapiEvent);
+-extern TAPI_CHANNEL *TAPI_Get_Channel_Ctx ();
++extern TAPI_CHANNEL *TAPI_Get_Channel_Ctx (IFX_void_t);
+ #endif /* TAPI_EXT_KEYPAD */
+ 
+ /* ============================= */
+@@ -1661,6 +1661,7 @@
+    pEvt = (IFX_TAPI_EVENT_t *) bufferPoolGet (pIFX_TAPI_BP_Event);
+    if (pEvt == IFX_NULL)
+    {
++/*tag__*/ printk("MARK4 : TAPI: Event_dispatch 1\n");
+       IFXOS_UNLOCKINT(lock);
+       if (!IFXOS_IN_INTERRUPT())
+          IFXOS_MutexUnlock (semBufferPoolAcc);
+@@ -1670,6 +1671,7 @@
+                                bufferPoolGet (pIFX_TAPI_BP_Deferred_Event);
+    if (pParam == IFX_NULL)
+    {
++/*tag__*/ printk("MARK5 : TAPI: Event_dispatch 2\n");
+       /* if no deferred_event buffer is free - discard the event as well :-/ */
+       bufferPoolPut (pEvt);
+       IFXOS_UNLOCKINT(lock);
+diff -ruiN tapi_pure/src/drv_tapi_fxo.c tapi/src/drv_tapi_fxo.c
+--- tapi_pure/src/drv_tapi_fxo.c	2009-06-29 16:17:03.000000000 +0700
++++ tapi/src/drv_tapi_fxo.c	2009-06-29 16:17:03.000000000 +0700
+@@ -37,7 +37,7 @@
+ 
+ /** maximum number of DAA channels TAPI can handle,
+     (size of the DAA to TAPI_CH lookuptable) */
+-#define IFX_TAPI_FXO_MAX_DAA_CH             16
++#define IFX_TAPI_FXO_MAX_DAA_CH             32
+ 
+ 
+ static IFX_TAPI_DRV_CTX_DAA_t *gpDaaCtx = IFX_NULL;
+@@ -175,7 +175,8 @@
+             {
+                ret = pDrvCtx->SIG.DTMFG_Cfg(pChannel->pLLChannel,
+                                             p_DialCfg->nInterDigitTime,
+-                                            p_DialCfg->nDigitPlayTime);
++                                            p_DialCfg->nDigitPlayTime,
++                                            p_DialCfg->pulseMode);
+                IFXOS_FREE(p_DialCfg);
+             }
+          }
+@@ -222,6 +223,7 @@
+                else
+                {
+                   ret = pDrvCtx->SIG.DTMFG_Start(pChannel->pLLChannel,
++                                     pChannel->TapiOpControlData.nDAA,
+                                                  p_DialData->nDigits,
+                                                  p_DialData->data);
+                }
+diff -ruiN tapi_pure/src/drv_tapi.h tapi/src/drv_tapi.h
+--- tapi_pure/src/drv_tapi.h	2009-06-29 16:17:03.000000000 +0700
++++ tapi/src/drv_tapi.h	2009-06-29 16:17:03.000000000 +0700
+@@ -143,8 +143,6 @@
+ /* Declarations for debug interface */
+ DECLARE_TRACE_GROUP  (TAPI_DRV);
+ DECLARE_LOG_GROUP    (TAPI_DRV);
+-/* global high level driver context used in system interface only */
+-extern struct _IFX_TAPI_HL_DRV_CTX gHLDrvCtx [TAPI_MAX_LL_DEVICES];
+ /* Counter of registered low level device drivers */
+ extern int ifx_tapi_drvctx_count;
+ 
+@@ -1019,4 +1017,7 @@
+                                    (IFX_int32_t Major);
+ extern IFX_int32_t IFX_TAPI_PKT_RTP_PT_Defaults (TAPI_CHANNEL *pChannel);
+ 
++/* global high level driver context used in system interface only */
++extern struct _IFX_TAPI_HL_DRV_CTX gHLDrvCtx [TAPI_MAX_LL_DEVICES];
++
+ #endif  /* DRV_TAPI_H */
+diff -ruiN tapi_pure/src/drv_tapi_linux.c tapi/src/drv_tapi_linux.c
+--- tapi_pure/src/drv_tapi_linux.c	2009-06-29 16:17:03.000000000 +0700
++++ tapi/src/drv_tapi_linux.c	2009-06-29 16:17:03.000000000 +0700
+@@ -2997,7 +2997,7 @@
+    Since when a key event is reported from hapi channel context is not known.
+    This is used to get 0th channel since Audio has only one channel for INCA2
+ */
+-TAPI_CHANNEL * TAPI_Get_Channel_Ctx()
++TAPI_CHANNEL * TAPI_Get_Channel_Ctx( IFX_void_t )
+ {
+    TAPI_CHANNEL *pChannel = IFX_NULL;
+    int i;
+diff -ruiN tapi_pure/src/drv_tapi_opcontrol.c tapi/src/drv_tapi_opcontrol.c
+--- tapi_pure/src/drv_tapi_opcontrol.c	2009-06-29 16:17:03.000000000 +0700
++++ tapi/src/drv_tapi_opcontrol.c	2009-06-29 16:17:38.000000000 +0700
+@@ -212,11 +212,11 @@
+ 
+    if (TAPI_SUCCESS(ret))
+    {
+-      /* Save new type and DAA number */
+-      pChannel->TapiOpControlData.nLineType = pCfg->lineType;
+-      pChannel->TapiOpControlData.nDAA      = pCfg->nDaaCh;
+       if (pCfg->lineType == IFX_TAPI_LINE_TYPE_FXO)
+       {
++	     /* Save new type and DAA number should not do this if FXS ?? */
++	     pChannel->TapiOpControlData.nLineType = pCfg->lineType;
++   	     pChannel->TapiOpControlData.nDAA      = pCfg->nDaaCh;
+          ret = TAPI_FXO_Register_DAA(pChannel->TapiOpControlData.nDAA, pChannel);
+          /* init the DAA channel */
+          if ((TAPI_SUCCESS(ret)) &&
+@@ -228,11 +228,15 @@
+                pChannel->TapiOpControlData.bDaaInitialized = IFX_TRUE;
+             }
+          }
+-      }
++      } else if(pCfg->lineType == IFX_TAPI_LINE_TYPE_VF){
++	     pChannel->TapiOpControlData.nLineType = pCfg->lineType;
++	  }
++	  /* If it is FXS - leave it as default (what to do if FXS_WB ??)
+       else
+       {
+          ret = TAPI_FXO_Register_DAA (pChannel->TapiOpControlData.nDAA, IFX_NULL);
+       }
++	  */
+    }
+    return ret;
+ }
+diff -ruiN tapi_pure/src/Makefile.am tapi/src/Makefile.am
+--- tapi_pure/src/Makefile.am	2009-06-29 16:17:03.000000000 +0700
++++ tapi/src/Makefile.am	2009-06-29 16:17:03.000000000 +0700
+@@ -160,7 +160,7 @@
+ 
+ # Extra rule for linux-2.6 kernel object
+ if KERNEL_2_6
+-drv_tapi_OBJS = "$(subst .c,.o,$(notdir $(drv_tapi_SOURCES)))"
++drv_tapi_OBJS = "$(subst .c,.o,$(drv_tapi_SOURCES))"
+ 
+ drv_tapi.ko: $(drv_tapi_SOURCES) $(EXTRA_DIST)
+ 	@echo -e "Making Linux 2.6.x kernel object"

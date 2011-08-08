@@ -1,0 +1,402 @@
+diff -ruiN vinetic_pure/2cpe/drv_vinetic_alm_cpe.c vinetic/2cpe/drv_vinetic_alm_cpe.c
+--- vinetic_pure/2cpe/drv_vinetic_alm_cpe.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/2cpe/drv_vinetic_alm_cpe.c	2009-09-17 13:15:26.000000000 +0700
+@@ -262,6 +262,19 @@
+          opmod.OP_MODE = VIN_OPMOD_FXO;
+          break;
+ 
++      case IFX_TAPI_LINE_TYPE_VF:
++         TRACE(VINETIC, DBG_LEVEL_NORMAL,
++               ("INFO: TAPI_LL_Phone_SwitchLine: Dev%d,Ch%d: "
++                "switch to VF line type\n",
++                pDev->nDevNr, pCh->nChannel - 1));
++         /* switching to linemode VF requires to switch to PDH first... */
++         IFXOS_MutexLock (pDev->mbxAcc);
++         opmod.OP_MODE = VIN_OPMOD_PDH;
++         ret = CmdWriteIsr (pDev, (IFX_uint16_t *)((IFX_void_t *) &opmod), 1);
++         IFXOS_MutexUnlock (pDev->mbxAcc);
++         opmod.OP_MODE = VIN_OPMOD_FXO;
++         break;
++
+       default:
+          Vinetic_IrqUnlockDevice(pDev);
+          return IFX_ERROR;
+diff -ruiN vinetic_pure/2cpe/drv_vinetic_gpio.c vinetic/2cpe/drv_vinetic_gpio.c
+--- vinetic_pure/2cpe/drv_vinetic_gpio.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/2cpe/drv_vinetic_gpio.c	2009-09-17 13:15:26.000000000 +0700
+@@ -801,4 +801,9 @@
+ 
+    return err;
+ }
++
++EXPORT_SYMBOL( VINETIC_GpioSet );
++EXPORT_SYMBOL( VINETIC_GpioGet );
++EXPORT_SYMBOL( VINETIC_GpioConfig );
++EXPORT_SYMBOL( VINETIC_GpioReserve );
+ /* @} */
+diff -ruiN vinetic_pure/2cpe/drv_vinetic_host.c vinetic/2cpe/drv_vinetic_host.c
+--- vinetic_pure/2cpe/drv_vinetic_host.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/2cpe/drv_vinetic_host.c	2009-09-17 13:15:26.000000000 +0700
+@@ -1784,6 +1784,39 @@
+ \param
+    pDev    - pointer to the device interface
+ \param
++   write_val - value to write (if != 0) or to read (if == 0) ( <= 0xFFFF )
++\retval readed_value if it was successible read operation (1 - if fail)
++\retval 0 if it was successible write operation (1 - if fail)
++\remark
++	you shouldn`t try to write 1 and try to read it (you can`t recognize fail)
++*/
++IFX_int32_t 
++VINETIC_Host_AccessTest (VINETIC_DEVICE *pDev, IFX_uint16_t write_val)
++{
++   IFX_uint16_t val =0;
++   IFX_uint8_t offset;
++
++   if (pDev->hostDev.nAccessMode == VIN_ACCESS_SPI)
++      offset = V2CPE_DUPO_REG15;
++   else
++      offset = V2CPE_ADDR;
++
++   if ( !write_val){ /* we should read */
++      REG_READ_PROT (pDev, offset, &val);
++      CHECK_HOST_ERR (pDev, return IFX_ERROR);
++	  return val;
++   } else { /* we should write */
++      REG_WRITE_PROT (pDev, offset, write_val);
++      CHECK_HOST_ERR (pDev, return IFX_ERROR);
++   	  return 0;
++   }
++}
++#if 0
++/**
++   Test the basic access of VINETIC device.
++\param
++   pDev    - pointer to the device interface
++\param
+    max_val - maximum test value ( <= 0xFFFF )
+ \return
+    IFX_SUCCESS or IFX_ERROR
+@@ -1835,6 +1868,7 @@
+ 
+    return IFX_SUCCESS;
+ }
++#endif 
+ 
+ /**
+   Initialize the VINETIC 2CPE Chip
+diff -ruiN vinetic_pure/2cpe/drv_vinetic_int.c vinetic/2cpe/drv_vinetic_int.c
+--- vinetic_pure/2cpe/drv_vinetic_int.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/2cpe/drv_vinetic_int.c	2009-09-17 13:17:32.000000000 +0700
+@@ -328,6 +328,7 @@
+             /* if no packet buffers available discard packet */
+             if (pPkt == NULL)
+             {
++/*tag__*/ printk("%s()\n",__func__);
+                /* optimized for stack usage - static */
+                static PACKET Pkt;
+ 
+diff -ruiN vinetic_pure/2cpe/Makefile.am vinetic/2cpe/Makefile.am
+--- vinetic_pure/2cpe/Makefile.am	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/2cpe/Makefile.am	2009-09-17 13:15:26.000000000 +0700
+@@ -218,7 +218,7 @@
+ 
+ # Extra rule for linux-2.6 kernel object
+ if KERNEL_2_6
+-drv_vinetic_OBJS = "$(subst .c,.o, $(notdir $(drv_vinetic_SOURCES)))"
++drv_vinetic_OBJS = "$(subst .c,.o, $(drv_vinetic_SOURCES))"
+ 
+ drv_vinetic.ko:
+ 	@echo -e "Making Linux 2.6.x kernel object"
+diff -ruiN vinetic_pure/src/common/src/sys_drv_debug.c vinetic/src/common/src/sys_drv_debug.c
+--- vinetic_pure/src/common/src/sys_drv_debug.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/src/common/src/sys_drv_debug.c	2009-09-17 13:15:26.000000000 +0700
+@@ -40,7 +40,7 @@
+ #include "sys_drv_ifxos.h"
+ #include "sys_drv_debug.h"
+ /** maximum allowed allocations */
+-#define MAX_MEMALLOC 100
++#define MAX_MEMALLOC 200
+ 
+ /** control structure for debug memory allocation */
+ typedef struct
+diff -ruiN vinetic_pure/src/drv_vinetic_linux.c vinetic/src/drv_vinetic_linux.c
+--- vinetic_pure/src/drv_vinetic_linux.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/src/drv_vinetic_linux.c	2009-09-17 13:15:26.000000000 +0700
+@@ -965,20 +965,38 @@
+    VINETIC_CHANNEL   *pCh = (VINETIC_CHANNEL *)pLLCh;
+    IFX_int32_t       len;
+    IFX_uint16_t      *pData = IFX_NULL;
++   IFX_uint16_t      psData[512] = {0,};/* tag__ tapi_stream.c PACKET_SIZE = 512 */
++
++   if(bufferPoolElementSize(TAPI_VoiceBufferPoolHandle_Get()) != 512){
++      TRACE(VINETIC, DBG_LEVEL_HIGH, ("ERR: Wrong static mas size.\n\r"));
++   }
+ 
+    /* Protect channel against concurrent tasks. */
+    IFXOS_MutexLock(pCh->chAcc);
+    Vinetic_IrqLockDevice(pCh->pParent);
+ 
+-   pData = (IFX_uint16_t *)bufferPoolGet(TAPI_VoiceBufferPoolHandle_Get());
++   /* using buffer from bufferPool lead to conflict with interrupt on other
++	* than current device irq lines, because all devices use the same bufferPool
++	* from tapi/src/drv_tapi_stream.c for getting memory, but just for current
++	* device irq line locks.
++	* So better to use static memory for our goals.
++	*/
++   //pData = (IFX_uint16_t *)bufferPoolGet(TAPI_VoiceBufferPoolHandle_Get());
++   pData = psData;
++   /* then we use static memory we do not need that */
++#if 0
+    if (IFX_NULL == pData)
+    {
+       /* Error getting memory for packet data. */
+       TRACE(VINETIC, DBG_LEVEL_HIGH, ("ERR: Reserving memory for packet "
+             "data.\n\r"));
++	  /* there was missed unlock */
++	   Vinetic_IrqUnlockDevice(pCh->pParent);
++	   IFXOS_MutexUnlock(pCh->chAcc);
+       return -EFAULT;
+    }
+    memset(pData, 0, bufferPoolElementSize(TAPI_VoiceBufferPoolHandle_Get()));
++#endif
+ 
+    Vinetic_IrqUnlockDevice(pCh->pParent);
+    IFXOS_MutexUnlock(pCh->chAcc);
+@@ -1009,13 +1027,15 @@
+    /* release lock */
+    IFXOS_MutexUnlock (pCh->chAcc);
+ 
++   /* then we use static memory we do not need that */
++#if 0
+    /* Protect channel against concurrent tasks. */
+    IFXOS_MutexLock(pCh->chAcc);
+    Vinetic_IrqLockDevice(pCh->pParent);
+    bufferPoolPut(pData);
+    Vinetic_IrqUnlockDevice(pCh->pParent);
+    IFXOS_MutexUnlock(pCh->chAcc);
+-
++#endif
+    return len;
+ #else
+    return -EINVAL;
+@@ -1551,6 +1571,7 @@
+ module_init(vinetic_module_init);
+ module_exit(vinetic_module_exit);
+ 
++EXPORT_SYMBOL( VINETIC_OpenKernel );
+ 
+ #endif /* LINUX */
+ 
+diff -ruiN vinetic_pure/src/drv_vinetic_sig.c vinetic/src/drv_vinetic_sig.c
+--- vinetic_pure/src/drv_vinetic_sig.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/src/drv_vinetic_sig.c	2009-09-17 13:15:26.000000000 +0700
+@@ -1445,6 +1445,7 @@
+    /* DTMF generator default timing configuration (times in ms) */
+    pSIG->nDtmfInterDigitTime = 100;
+    pSIG->nDtmfDigitPlayTime  = 100;
++   pSIG->pulseDialMode = IFX_FALSE;
+ }
+ 
+ 
+diff -ruiN vinetic_pure/src/drv_vinetic_sig_dtmfg.c vinetic/src/drv_vinetic_sig_dtmfg.c
+--- vinetic_pure/src/drv_vinetic_sig_dtmfg.c	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/src/drv_vinetic_sig_dtmfg.c	2009-09-17 13:15:26.000000000 +0700
+@@ -34,6 +34,7 @@
+ #include "ifx_types.h"
+ #include "drv_vinetic_sig_priv.h"
+ #include "drv_vinetic_api.h"
++#include "drv_tapi_fxo_ll_interface.h"
+ 
+ /* ============================= */
+ /* Local Macros & Definitions    */
+@@ -123,11 +124,26 @@
+ /* Local function declaration    */
+ /* ============================= */
+ 
++static IFX_TAPI_DRV_CTX_DAA_t * pDaaCtx = IFX_NULL;
++
+ /* ============================= */
+ /* Function definitions          */
+ /* ============================= */
+ 
+ /**
++   register a daa abstraction driver to drv_tapi
++   \param pDC - reference to a daa driver context
++   \return    - IFX_SUCCESS or IFX_ERROR in case of failure
++   \remarks
++   function is exported to be called by the DAA board driver
++*/
++IFX_int32_t VINETIC_Register_DAA_Ctx( IFX_TAPI_DRV_CTX_DAA_t * pDC )
++{
++	pDaaCtx = pDC;
++	return IFX_SUCCESS;
++}
++
++/**
+    Controls the DTMF sending mode. The DTMF may be sent out-of-band (OOB)
+    or in-band.
+ \param pChannel  Handle to TAPI_CHANNEL structure
+@@ -888,13 +904,15 @@
+    \param pLLChannel      - Handle to VINETIC_CHANNEL structure
+    \param nInterDigitTime - Inter-digit-time in ms
+    \param nDigitPlayTime  - Active digit-play-time in ms
++   \param pulseMode       - Dial in pulse mode instead of tone
+ 
+    \return
+       IFX_SUCCESS or IFX_ERROR
+ */
+ IFX_int32_t IFX_TAPI_LL_SIG_DTMFG_Cfg (IFX_TAPI_LL_CH_t *pLLChannel,
+                                        IFX_uint16_t nInterDigitTime,
+-                                       IFX_uint16_t nDigitPlayTime)
++                                       IFX_uint16_t nDigitPlayTime,
++                                       IFX_boolean_t pulseMode)
+ {
+    VINETIC_CHANNEL *pCh  = (VINETIC_CHANNEL *) pLLChannel;
+ 
+@@ -907,14 +925,91 @@
+ 
+    pCh->pSIG->nDtmfInterDigitTime = nInterDigitTime;
+    pCh->pSIG->nDtmfDigitPlayTime  = nDigitPlayTime;
++   pCh->pSIG->pulseDialMode  = pulseMode;
+ 
+    return IFX_SUCCESS;
+ }
+ 
+ /**
++   Start Pulse Dialing 
++   \param nDAA     - DAA device number
++   \param nDigits  - Number of digits in the data string to be sent
++   \param *data    - String with the digits (ascii 0-9 * # A-D) to be sent
++   \return
++      IFX_SUCCESS or IFX_ERROR
++   \remark
++      '*', '#' and 'A', 'B', 'C' and 'D' will be omitted while dialing.
++*/
++IFX_int32_t 
++Pulse_Dial (IFX_uint16_t nDAA, IFX_uint8_t nDigits, IFX_char_t  *data)
++{
++	IFX_uint8_t i;
++	IFX_TAPI_FXO_HOOK_t hook;
++	IFX_int32_t onhook_imp = 54;     /* ms */
++	IFX_int32_t offhook_imp = 46;    /* ms */
++	IFX_int32_t offhook_pause = 500; /* ms */
++	int err;
++
++	if (pDaaCtx == IFX_NULL){
++		TRACE (VINETIC, DBG_LEVEL_HIGH,
++			("Daa driver is not initilized yet: can`t dial in pulse mode\n\r"));
++		return IFX_ERROR;
++	}
++
++	err = pDaaCtx->hookGet(nDAA, &hook);
++	if(err == IFX_ERROR){
++		TRACE (VINETIC, DBG_LEVEL_HIGH, ("Can`t get hook state\n\r"));
++		return IFX_ERROR;
++	}
++	if(hook == IFX_TAPI_FXO_HOOK_ONHOOK){
++		TRACE (VINETIC, DBG_LEVEL_HIGH, ("Can`t dial while onhook\n\r"));
++		return IFX_SUCCESS;
++	}
++
++	/* dial a given number */
++	for (i=0; i<nDigits; i++){
++		IFX_uint8_t j;
++		IFX_char_t nChar = data[i];
++		IFX_uint8_t imps_cnt;
++
++		/* recognize digit from data[i] */
++		/* and omit *#ABCD */
++		if(	nChar == '*' || nChar == '#' || nChar == 'A' || 
++			nChar == 'B' || nChar == 'C' || nChar == 'D'){
++			continue;
++		} 
++		if ((nChar >= '0') && (nChar <= '9')){
++			if (nChar == '0'){
++				imps_cnt = 10;
++			} else {
++				 imps_cnt = (IFX_uint8_t)nChar - '0';
++			}
++		} else {
++			TRACE (VINETIC, DBG_LEVEL_HIGH, ("Can`t dial '%c'\n\r",nChar));
++			return IFX_ERROR;
++		}
++
++		/* dial a digit */
++		for (j=0; j<imps_cnt; j++){
++			pDaaCtx->hookSet(nDAA, IFX_TAPI_FXO_HOOK_ONHOOK);
++			set_current_state(TASK_UNINTERRUPTIBLE);
++			schedule_timeout(onhook_imp);
++
++			pDaaCtx->hookSet(nDAA, IFX_TAPI_FXO_HOOK_OFFHOOK);
++			set_current_state(TASK_UNINTERRUPTIBLE);
++			schedule_timeout(offhook_imp);
++		} 
++		set_current_state(TASK_UNINTERRUPTIBLE);
++		schedule_timeout(offhook_pause);
++	} 
++	return IFX_SUCCESS;
++}
++
++/**
+    Start the DTMF tone generator
+ 
+    \param pLLChannel      - Handle to VINETIC_CHANNEL structure
++   \param nDAA     - DAA device number 
+    \param nDigits  - Number of digits in the data string to be sent
+    \param *data    - String with the digits (ascii 0-9 A-D) to be sent
+ 
+@@ -922,6 +1017,7 @@
+       IFX_SUCCESS or IFX_ERROR
+ */
+ IFX_int32_t IFX_TAPI_LL_SIG_DTMFG_Start (IFX_TAPI_LL_CH_t *pLLChannel,
++                                         IFX_uint16_t nDAA,
+                                          IFX_uint8_t nDigits,
+                                          IFX_char_t  *data)
+ {
+@@ -929,6 +1025,11 @@
+    IFX_int32_t ret;
+    int i;
+ 
++   /* dial data in pulse mode if it is on and exit */
++   if(pCh->pSIG->pulseDialMode == IFX_TRUE){
++		return Pulse_Dial (nDAA, nDigits, data);
++   } 
++
+    /* prevent starting the generator while it is already running */
+    if (pCh->dtmfSend.useCnt != 0)
+       return IFX_ERROR;
+@@ -1122,3 +1223,6 @@
+ 
+    return ret;
+ }
++
++EXPORT_SYMBOL( VINETIC_Register_DAA_Ctx );
++
+diff -ruiN vinetic_pure/src/drv_vinetic_sig.h vinetic/src/drv_vinetic_sig.h
+--- vinetic_pure/src/drv_vinetic_sig.h	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/src/drv_vinetic_sig.h	2009-09-17 13:15:26.000000000 +0700
+@@ -114,9 +114,11 @@
+ 
+ extern IFX_int32_t  IFX_TAPI_LL_SIG_DTMFG_Cfg (IFX_TAPI_LL_CH_t *pLLChannel,
+                                                IFX_uint16_t nInterDigitTime,
+-                                               IFX_uint16_t nDigitPlayTime);
++                                               IFX_uint16_t nDigitPlayTime,
++                                               IFX_boolean_t pulseMode);
+ 
+ extern IFX_int32_t  IFX_TAPI_LL_SIG_DTMFG_Start (IFX_TAPI_LL_CH_t *pLLChannel,
++                                                 IFX_uint16_t nDAA,
+                                                  IFX_uint8_t nDigits,
+                                                  IFX_char_t  *data);
+ 
+diff -ruiN vinetic_pure/src/drv_vinetic_sig_priv.h vinetic/src/drv_vinetic_sig_priv.h
+--- vinetic_pure/src/drv_vinetic_sig_priv.h	2009-09-17 13:15:26.000000000 +0700
++++ vinetic/src/drv_vinetic_sig_priv.h	2009-09-17 13:15:26.000000000 +0700
+@@ -448,6 +448,7 @@
+    /* DTMF generator configuration */
+    IFX_uint16_t       nDtmfInterDigitTime;
+    IFX_uint16_t       nDtmfDigitPlayTime;
++   IFX_boolean_t      pulseDialMode;
+ };
+ 
+ 

@@ -1,0 +1,381 @@
+#!/bin/sh
+# SHDSL PCI modules configuration tool 
+# for Linux kernel v 2.6 drivers
+#
+#	Written 2007 by Artem Y. Polyakov
+#
+#---------------------------------------------------------
+
+PCI_PATH="/sys/class/net"
+
+#---------------------------------------------------------
+
+print_usage()
+{
+    echo "@MANUFACTURER@ @MODNAME@ configuration tool"
+    echo "Usage:"
+    echo "  $0 <if>               - get statistics"
+    echo "  $0 <if> [args]        - set DSL parameters"
+    echo "  <if> - @MODNAME@ network interface name"
+    echo "Possible arguments:"
+    echo "  master | slave             - set modem mode: master(STU-C) or slave(STU-R)"
+    echo "  tcpamXXX                   - line coding, XXX={8,16,32,64,128}"
+    echo "  annex A|B|AB               - G.SHDSL.bis Annex type"    
+    echo "  rate <value>               - line rate"
+    echo "  plesio | plesio-ref | sync - Plesiochronous/Plesio-Ref/Synchronous modes"
+    echo "  pbo-normal|pbo-forced <val>- Power Backoff mode, <val> - value in dB"
+    echo "  crc32 | crc16              - CRC length"
+    echo "  mac-addr <value>           - less significant part of MAC-address"
+    echo "  rboff | rbon               - PCI read burst mode off"
+    echo "  wboff | wbon               - PCI write burst mode off"
+    echo "  fill_ff | fill_7e          - fill byte value"
+    echo "  normal | invert            - data inversion"
+    echo "  advlink [on|off]           - Advanced link checking"    
+    echo "Power control:"
+    echo "  pwron | pwroff             - enable/disable power feeding"
+}
+
+print_stat()
+{
+    if [ $# -lt 1 ]; then
+		exit
+    fi
+    IFACE=$1
+
+    master=`cat mode`
+    code=`cat tcpam`
+    rate=`cat rate`
+    if [ -n "$rate" ]; then
+		rate="rate=$rate"
+    else
+		rate=""
+    fi
+    annex=`cat annex`    
+    if [ -n "$annex" ]; then
+		annex="annex=$annex"
+    else
+		annex=""
+    fi
+
+	clkmode=`cat clkmode`
+    if [ -n "$clkmode" ]; then
+		clkmode="clock_mode=$clkmode"
+    else
+		clkmode=""
+    fi
+	
+	if [ "$master" = "master" ]; then
+		pbo=`cat pbo_mode`
+		pbo_val=`cat pbo_val`
+		[ "$pbo" = "Forced" ] && pbo="${pbo} ${pbo_val} dB"
+	else
+		pbo=""
+	fi
+
+
+    rb=`cat rburst`
+    wb=`cat wburst`
+    fill=`cat fill_7e`
+    inv=`cat inv`
+    crc=`cat crc16`
+    pwr_mod=`cat pwr_source`
+    pwron=`cat pwron`
+    pwrovl=`cat pwrovl`
+    pwrunb=`cat pwrunb`
+    advlink=`cat advlink`
+
+
+    echo "$1:"
+    echo "      shdsl:   $master $rate $code $annex $clkmode"
+	[ -n "$pbo" ] && echo "               PBO=$pbo"
+    echo "      hdlc:    fill="$fill" inversion="$inv" "$crc
+    echo "      PCI bus: rb$rb wb$wb"
+    echo "      AdvLink: $advlink"
+    if [ "$pwr_mod" = "1" ]; then
+        echo "Power:"
+        echo "      pwron=$pwron overload=$pwrovl unbalance=$pwrunb"
+    fi
+    echo "Statistics:"
+    cat statistics
+}
+
+
+print_stat_all()
+{
+	cd "$PCI_PATH"
+    echo "@MANUFACTURER@ @MODNAME@ SHDSL modem statistics"	
+	for iface in *; do
+		if [ -d "$iface/sg_private" ]; then
+			bkp_dir=`pwd`
+			cd "$iface/sg_private"
+			print_stat $iface
+			cd $bkp_dir
+		fi
+	done
+}
+
+#---------------------------------------------------------
+
+# Check that interface name specifyed
+if [ $# = 0 ]; then
+    print_stat_all
+    exit
+fi
+
+if [ "$1" = "--help" -o "$2" = "-h" ]; then
+	print_usage
+	exit
+fi
+
+cdir=`pwd`
+iface=$1
+
+
+
+if [ -d "$PCI_PATH/$1/sg_private" ]; then
+	cd "$PCI_PATH/$1/sg_private"
+else
+	echo "$0: No such device $1"
+	exit
+fi
+
+if [ "$#" = 1 ]; then
+    echo "@MANUFACTURER@ @MODNAME@ SHDSL module statistics"
+	print_stat $iface
+	exit
+fi
+
+# configuring config
+shdsl_need_reconf=0
+shift
+while [ ! -z "$1" ]; do
+
+    case "$1" in
+#------------ SHDSL settings --------------------------------------    
+		"master")
+			echo 1 > mode
+			shdsl_need_reconf=1
+			;;
+		"slave")
+			echo 0 > mode
+			shdsl_need_reconf=1	
+			;;
+		"rate")
+			if [ -z "$2" ]; then
+				shift
+				echo $0": rate value is missing"		
+				break
+			fi
+			chk=`echo "$2" | grep '[^0-9]'`
+			if [ ! -z "$chk" ]; then
+				echo $0": rate value is missing"
+				break
+			fi
+			echo "$2" > rate
+			tmp=`cat rate`
+			if [ "$tmp" != "$2" ]; then
+				echo "WARNING: rate value setted to $tmp"
+			fi
+			shdsl_need_reconf=1	
+			shift
+			;;
+		"annex")
+			if [ -z "$2" ]; then
+				echo $0": syntax error, after \"annex\" "
+				break
+			fi
+
+			if [ "$2" = "A" ]; then
+				echo 0 > annex
+				shift
+			elif [ "$2" = "B" ]; then
+				echo 1 > annex
+				shift
+			elif [ "$2" = "AB" ]; then
+				echo 2 > annex
+				shift
+			fi
+			shdsl_need_reconf=1	
+			;;
+		"advlink")
+			if [ -z "$2" ]; then
+				echo $0": syntax error, after \"annex\" "
+				break
+			fi
+
+			if [ "$2" = "on" ]; then
+				echo 1 > advlink
+				shift
+			elif [ "$2" = "off" ]; then
+				echo 0 > advlink
+				shift
+			fi
+			;;
+		"tcpam4")
+			echo 1 > tcpam
+			tmp=`cat tcpam`
+			if [ "$tmp" != "TCPAM4" ]; then
+				echo "TCPAM64 mode not supported"
+			else
+				shdsl_need_reconf=1	
+			fi
+			shdsl_need_reconf=1	
+			;;
+		"tcpam8")
+			echo 2 > tcpam
+			tmp=`cat tcpam`
+			if [ "$tmp" != "TCPAM8" ]; then
+				echo "TCPAM64 mode not supported"
+			else
+				shdsl_need_reconf=1	
+			fi
+			shdsl_need_reconf=1	
+			;;
+		"tcpam16")
+			echo 3 > tcpam
+			shdsl_need_reconf=1	
+			;;
+		"tcpam32")
+			echo 4 > tcpam
+			shdsl_need_reconf=1	
+			;;
+		"tcpam64")
+			echo 5 > tcpam
+			tmp=`cat tcpam`
+			if [ "$tmp" != "TCPAM64" ]; then
+				echo "TCPAM64 mode not supported"
+			else
+				shdsl_need_reconf=1	
+			fi
+			;;
+		"tcpam128")
+			echo 6 > tcpam
+			tmp=`cat tcpam`
+			if [ "$tmp" != "TCPAM128" ]; then
+				echo "TCPAM128 mode not supported"
+			else
+				shdsl_need_reconf=1
+			fi
+			;;
+		"plesio")
+			echo 0 > clkmode
+			shdsl_need_reconf=1	
+			;;
+		"sync")
+			echo 1 > clkmode
+			shdsl_need_reconf=1	
+			;;
+		"plesio-ref")
+			echo 2 > clkmode
+			shdsl_need_reconf=1	
+			;;
+		"pbo-normal")
+			echo 0 > pbo_mode
+			shdsl_need_reconf=1	
+			;;
+		"pbo-forced")
+			echo 1 > pbo_mode
+			if [ -z "$2" ]; then
+				shift
+				echo $0": PBO value is missing"		
+				break
+			fi
+			chk=`echo $2 | grep '[^0-9]'`
+			if [ ! -z "$chk" ]; then
+				echo $0": PBO value is missing"
+				break
+			fi
+			echo "$2" > pbo_val
+			tmp=`cat pbo_val`
+			if [ "$tmp" != "$2" ]; then
+				echo "WARNING: PBO value setted to $tmp"
+			fi
+			shdsl_need_reconf=1	
+			shift
+			;;
+#------------ if settings --------------------------------------
+
+		"mac-addr")
+			if [ -z $2 ]; then
+				echo $0": syntax error, after \"mac-addr\" "
+				break
+			fi
+			echo "$2" > maddr 
+			shift
+			;;
+
+#------------ HDLC settings --------------------------------------
+
+		"crc32")
+			echo 0 > crc16
+			;;
+		"crc16")
+			echo 1 > crc16
+			;;
+		"rboff")
+			echo 0 > rburst
+			;;
+		"wboff")
+			echo 0 > wburst
+			;;
+		"rbon")
+			echo 1 > rburst
+			;;
+		"wbon")
+			echo 1 > wburst
+			;;
+		"normal")
+			echo 0 > inv
+			;;
+		"invert")
+			echo 1 > inv
+			;;
+		"fill_ff")
+			echo 0 > fill_7e
+			;;
+		"fill_7e")
+			echo 1 > fill_7e
+			;;
+		
+#------------ Compat settings --------------------------------------	
+		
+		"NSGate_comp")
+			if [ -z "$2" ]; then
+				echo $0": syntax error, after \"NSGate_comp\" "
+				break
+			fi
+
+			if [ "$2" = "on" ]; then
+				echo 1 > nsg_comp
+				shift
+			elif [ "$2" = "off" ]; then
+				echo 0 > nsg_comp
+				shift
+			fi
+			;;
+
+#------------ DEBUG --------------------------------------	
+
+		"debug_off")
+			echo 0 > debug_on
+			;;
+		"debug_on")
+			echo 1 > debug_on
+			;;
+		"pwron")
+			echo 1 > pwron
+			;;
+		"pwroff")
+			echo 0 > pwron
+			;;
+		*)
+			echo $0": error parameter - "$1
+			;;
+    esac
+    shift
+done
+
+if [ "$shdsl_need_reconf" = 1 ]; then
+    echo 1 > apply_cfg
+fi
+

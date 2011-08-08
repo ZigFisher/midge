@@ -1,0 +1,253 @@
+#!/bin/sh
+
+# E1 modules boot configuration script
+# Written by Polyakov A.U. <artpol84@gmail.com>
+
+. /etc/templates/oem-vars
+
+kdb="kdb"
+#e1_mr16g="/sys/bus/pci/drivers/"
+e1_cfgpath="/sys/class/net/"
+
+ifcfg="/sbin/ifconfig"
+
+_e1_ifdefcfg(){	
+	local slot=$1
+	local dev=$2	
+    local type=$3
+    
+	kdb rm sls sys_pcicfg_s${slot}_${dev}*
+	kdb set sys_pcicfg_s${slot}_${dev}_proto="cisco"
+	kdb set sys_pcicfg_s${slot}_${dev}_fram="0"
+	kdb set sys_pcicfg_s${slot}_${dev}_smap=""
+	kdb set sys_pcicfg_s${slot}_${dev}_crc4="0"
+	kdb set sys_pcicfg_s${slot}_${dev}_cas="0"
+	kdb set sys_pcicfg_s${slot}_${dev}_clk="0"
+	kdb set sys_pcicfg_s${slot}_${dev}_lhaul="0"
+	kdb set sys_pcicfg_s${slot}_${dev}_lcode="1"
+	kdb set sys_pcicfg_s${slot}_${dev}_hcrc="1"
+	kdb set sys_pcicfg_s${slot}_${dev}_fill="1"	
+	kdb set sys_pcicfg_s${slot}_${dev}_inv="normal"
+
+    if [ "$type" = "$mr16g_drvname" ]; then
+    	kdb set sys_pcicfg_s${slot}_${dev}_ts16="1"
+	    kdb set sys_pcicfg_s${slot}_${dev}_llpb="0"
+    	kdb set sys_pcicfg_s${slot}_${dev}_rlpb="0"
+    fi
+}
+
+_e1_defcfg(){
+	local slot=$1
+    local type=$2
+	local ifnum=`kdb get sys_pcitbl_s${slot}_ifnum`
+	local i=0
+
+	kdb set sys_pcicfg_s${slot}_ifnum="$ifnum"
+	while [ $i -lt $ifnum ]; do
+		_e1_ifdefcfg $slot $i $type
+		i=`expr $i + 1`
+	done
+}
+
+_e1_ifcfg(){
+	local iface=$1
+	local slot=$2
+	local dev=$3
+    local type=$4
+
+	# Network settings
+	valid=`$kdb get sys_iface_${iface}_valid`
+	proto=`$kdb get sys_iface_${iface}_proto`
+	if [ -z "$valid" ]; then
+		$kdb set sys_iface_${iface}_valid=1
+	fi
+	if [ -z "$proto" ]; then
+		$kdb set sys_iface_${iface}_proto=hdlc
+	fi
+	
+
+	# Hardware settings
+	unset proto fram ts16 smap crc4 cas clk lhaul lcode hcrc inv fill cisco_int cisco_to network_restart llpb rlpb
+	eval `$kdb -qq sls sys_pcicfg_s${slot}_${dev}_`
+	
+	#check if specified protocol is already set
+	tmp=`sethdlc $iface | grep "$proto"`
+	if [ -n "$tmp" ]; then
+		# protocol already setted
+		network_restart=0
+	else
+		network_restart=1
+		# apply configuration
+		$ifcfg $iface down
+		# bind driver with protocol
+		case "${proto}" in
+		hdlc*)
+			sethdlc $iface $proto ${hdlc_enc} ${hdlc_parity}
+			;;
+		cisco)
+			if [ "${cisco_int}" -eq "0" ]; then
+				cisco_int=""
+			elif [ -z "${cisco_int}" ]; then
+				cisco_int=""		
+			else
+				cisco_int="interval ${cisco_int}"
+			fi
+			if [ "${cisco_to}" = 0 ]; then
+				cisco_to=""
+			elif [ -z "${cisco_to}" ]; then
+				cisco_to=""		
+			else
+				cisco_to="timeout ${cisco_to}"
+			fi
+			sethdlc $iface $proto ${cisco_int} ${cisco_to}
+			;;
+		*)
+    			if [ -n "$proto" ]; then
+			    sethdlc $iface $proto
+			fi
+		esac
+		# set network interface proto (for web)
+		case "$proto" in
+		hdlc-eth)
+			kdb set sys_iface_${iface}_proto=ether
+			;;
+		*)
+			kdb set sys_iface_${iface}_proto=hdlc
+			;;
+		esac
+	fi
+	
+	DIR=`pwd`
+
+    cd $e1_cfgpath/$iface/"hw_private"
+    
+	# Change slotmap only if it really changed
+	
+	echo $fram 	> framed
+	if [ "$fram" = "1" ]; then
+		smap_old=`cat slotmap`
+        if [ -f "map_ts16" ]; then
+    		echo $ts16 	> map_ts16
+        fi
+		if [ "$smap_old" != "$smap" ]; then
+			echo "$smap" > slotmap
+		fi
+		smap=`cat slotmap`
+		kdb set sys_pcicfg_s${slot}_${dev}_smap=$smap
+	fi
+	echo $clk 	> clck
+	echo $crc4 	> crc4
+	# CAS depends on TS16 (it uses TIMESLOT#16 - so update from hardware)
+	echo $cas 	> cas
+	tmp=`cat cas`
+	if [ "$tmp" = "on" -o "$tmp" = "1" ]; then
+		kdb set sys_pcicfg_s${slot}_${dev}_cas=1
+	else
+		kdb set sys_pcicfg_s${slot}_${dev}_cas=0
+	fi
+	echo $lhaul > long_haul
+	echo $lcode > hdb3
+	echo $hcrc > crc16
+	echo $fill > fill_7e
+	echo $inv > inv
+    
+	if [ "$llpb" = "on" -o "$llpb" = "1" ]; then
+	    echo 1 > llpb
+	else
+	    echo 0 > llpb
+	fi
+	if [ "$rlpb" = "on" -o "$rlpb" = "1" ]; then
+	    echo 1 > rlpb
+	else
+	    echo 0 > rlpb
+	fi
+	cd $DIR	
+	
+	# TODO: Not always after protocol change network can be restarted
+	# need some compatibility 
+	if [ "$network_restart" -eq 1 ]; then
+		/etc/init.d/network restart
+	fi
+}
+
+_e1_modcfg(){
+	local slot=$1
+	local dev=$2
+	local ifaces
+	local ifnum
+	local iface
+	
+	ifaces=`kdb get sys_pcitbl_s${slot}_ifaces`
+	cur_type=`kdb get sys_pcitbl_s${slot}_iftype`
+	cur_cnt=`kdb get sys_pcitbl_s${slot}_ifnum`
+	cfg_cnt=`kdb get sys_pcicfg_s${slot}_ifnum`
+	cfg_type=`kdb get sys_pcicfg_s${slot}_iftype`
+	if [ -z "$cfg_type" ] || [ -z "$cfg_cnt" ]; then
+		kdb set sys_pcicfg_s${slot}_iftype="$cur_type"
+		kdb set sys_pcicfg_s${slot}_ifaces="$ifaces"
+		_e1_defcfg "$slot" "$cur_type"
+	elif [ "$cur_cnt" -gt "$cfg_cnt" ]; then
+		tmp="$cfg_cnt"
+		while [ "$tmp" -lt "$cur_cnt" ]; do
+			_e1_ifdefcfg "$slot" "$tmp" "$cur_type"
+			tmp=`expr $tmp + 1`
+		done
+		kdb set sys_pcicfg_s${slot}_ifnum="$cur_cnt"
+	fi
+	
+	ifaces=`kdb get sys_pcitbl_s${slot}_ifaces`
+	ifnum=0
+	for iface in $ifaces; do
+		if [ -n "$dev" ]; then
+			if [ "$dev" -eq "$ifnum" ]; then
+				_e1_ifcfg "$iface" "$slot" "$ifnum" "$cur_type" 
+				break
+			fi
+		else
+			_e1_ifcfg "$iface" $slot $ifnum  "$cur_type"
+		fi
+		ifnum=`expr $ifnum + 1`
+	done
+}
+
+	
+_e1_start(){
+	
+	echo  "Configuring E1: "
+	eval `kdb sls -q sys_pcitbl_`
+	for s in $slots; do
+		unset type
+		eval "type=\$s${s}_iftype"
+		eval "num=\$s${s}_ifnum"
+		eval "ifaces=\$s${s}_ifaces"
+		if [ "$type" != "$mr16g_drvname" ] && [ "$type" != "$mr17g_drvname" ]; then
+			continue
+		fi
+	    _e1_modcfg $s
+        case "$type" in 
+        "$mr16g_drvname")
+    		echo "    ${mr16g_modname}${oem_ifpfx}${num}($ifaces) "
+            ;;
+        "$mr17g_drvname")
+    		echo "    ${mr17g_modname}${oem_ifpfx}${num}($ifaces) "
+            ;;
+        esac
+	done
+	echo
+}
+ 
+_e1_stop(){
+	return 0
+}
+
+case "$1" in
+	start) 
+		_e1_start 
+		;;
+	stop)
+		_e1_stop 
+		;;
+	restart)
+		_e1_modcfg $2 $3
+		;;
+esac

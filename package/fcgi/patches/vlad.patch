@@ -1,0 +1,50 @@
+diff -ur fcgi-2.4.0-original/cgi-fcgi/Makefile.in fcgi-2.4.0/cgi-fcgi/Makefile.in
+--- fcgi-2.4.0-original/cgi-fcgi/Makefile.in	2007-08-15 14:26:14.000000000 +0300
++++ fcgi-2.4.0/cgi-fcgi/Makefile.in	2007-08-15 14:33:48.000000000 +0300
+@@ -131,9 +131,9 @@
+ am__depfiles_maybe = depfiles
+ @AMDEP_TRUE@DEP_FILES = ./$(DEPDIR)/cgi-fcgi.Po
+ COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
+-	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
++	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -L../libfcgi -lfcgi
+ LTCOMPILE = $(LIBTOOL) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) \
+-	$(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
++	$(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -L../libfcgi -lfcgi
+ CCLD = $(CC)
+ LINK = $(LIBTOOL) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
+ 	$(AM_LDFLAGS) $(LDFLAGS) -o $@
+diff -ur fcgi-2.4.0-original/Makefile.in fcgi-2.4.0/Makefile.in
+--- fcgi-2.4.0-original/Makefile.in	2007-08-15 14:26:14.000000000 +0300
++++ fcgi-2.4.0/Makefile.in	2007-08-15 14:35:59.000000000 +0300
+@@ -99,13 +99,12 @@
+ am__quote = @am__quote@
+ install_sh = @install_sh@
+ 
+-SUBDIRS = libfcgi cgi-fcgi examples include
++SUBDIRS = libfcgi include
+ 
+ include_HEADERS = fcgi_config.h
+ 
+ EXTRA_DIST = LICENSE.TERMS              \
+              Makefile.nt                \
+-             cgi-fcgi/cgi-fcgi.mak      \
+              examples/authorizer.mak    \
+              examples/echo.mak          \
+              examples/echox.mak         \
+@@ -158,7 +157,6 @@
+              doc/FCGI_Finish.3          \
+              doc/FCGI_SetExitStatus.3   \
+              doc/FCGI_StartFilterData.3 \
+-             doc/cgi-fcgi.1             \
+              doc/fcgi-devel-kit.htm     \
+              doc/fcgi-java.htm          \
+              doc/fcgi-perf.htm          \
+@@ -379,7 +377,7 @@
+ distdir: $(DISTFILES)
+ 	$(am__remove_distdir)
+ 	mkdir $(distdir)
+-	$(mkinstalldirs) $(distdir)/Win32 $(distdir)/cgi-fcgi $(distdir)/doc $(distdir)/doc/fastcgi-prog-guide $(distdir)/doc/fastcgi-whitepaper $(distdir)/examples $(distdir)/images $(distdir)/include $(distdir)/java $(distdir)/libfcgi $(distdir)/perl
++	$(mkinstalldirs) $(distdir)/Win32 $(distdir)/doc $(distdir)/doc/fastcgi-prog-guide $(distdir)/doc/fastcgi-whitepaper $(distdir)/examples $(distdir)/images $(distdir)/include $(distdir)/java $(distdir)/libfcgi $(distdir)/perl
+ 	@list='$(DISTFILES)'; for file in $$list; do \
+ 	  if test -f $$file || test -d $$file; then d=.; else d=$(srcdir); fi; \
+ 	  dir=`echo "$$file" | sed -e 's,/[^/]*$$,,'`; \

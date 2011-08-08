@@ -1,0 +1,33 @@
+# Makefile for Sigrand MR17S module driver
+# Written by Artem Y. Polyakov <artpol84@gmail.com>
+# 01.09.2008
+
+CFLAGS+=@CFLAGS@
+obj-m := @DRVNAME@.o
+@DRVNAME@-objs := mr17s_main.o mr17s_debug.o mr17s_sysfs.o
+
+@DRVNAME@.ko: mr17s_main.c mr17s_debug.c mr17s_sysfs.c
+	make -C  @KERNSRC@ SUBDIRS=$(PWD) modules CROSS_COMPILE=@CROSS_PREFIX@ 
+	cd tools && make all && cd ../
+
+all: @DRVNAME@.ko 
+
+install: @DRVNAME@.ko
+	install -m 644 @DRVNAME@.ko @INST_PATH@/lib/modules/@KERNVER@/
+	install -m 744 ./tools/mr17s_cfg @INST_PATH@/sbin/@TOOLNAME@
+	[ "yes" != "@DEBUG@" ] || install -m 744 ./tools/mr17s_debug @INST_PATH@/sbin/@DBGTOOLNAME@
+
+clean:
+	rm --preserve-root -f .*.o*
+	rm --preserve-root -f .*.ko*
+	rm --preserve-root -f *.o*
+	rm --preserve-root -f *.ko*
+	rm --preserve-root -f *.mod.*
+	rm --preserve-root -f .mr17s*
+	rm --preserve-root -f -R .tmp*
+
+# Assembler debug template
+#mr16g_hdlc.s: mr16g_hdlc.c
+#	make -C @KERNSRC@ CROSS_COMPILE=@CROSS_PREFIX@ $(PWD)/mr16g_hdlc.s
+#debug: mr16g_hdlc.c mr16g_hdlc.s
+#	@CROSS_PREFIX@objdump -d mr16g_hdlc.o > mr16g_hdlc.disasm

@@ -1,0 +1,5 @@
+Package: libax25
+Priority: optional
+Section: hamradio
+Description: AX.25 library (Amateur Radio)
+Depends:

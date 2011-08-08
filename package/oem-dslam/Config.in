@@ -1,0 +1,12 @@
+config BR2_PACKAGE_SIGRAND_DSLAM
+	prompt "DSLAM ................. Sigrand DSLAM control software"
+	tristate
+	default y if CONFIG_DEVEL
+	depends on BR2_LINUX_2_6_SIGRAND5120
+
+config BR2_PACKAGE_SIGRAND_DSLAM_DEBUG
+	prompt "dslam_dbg ........... Sigrand DSLAM Debug"
+	bool
+	default n
+	depends on BR2_LINUX_2_6_SIGRAND5120
+	depends on BR2_PACKAGE_SIGRAND_MR17H

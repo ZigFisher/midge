@@ -1,0 +1,4 @@
+Package: oem-rs232.g1
+Priority: optional
+Section: console
+Description: 1st generation RS232 device driver 

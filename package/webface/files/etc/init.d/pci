@@ -1,0 +1,270 @@
+#!/bin/sh
+
+# PCI bus devices control
+# Written by Polyakov A.U. <artpol84@gmail.com>
+
+
+kdb="/usr/bin/kdb"
+ip="/usr/sbin/ip"
+ifcfg="/sbin/ifconfig"
+tmp_file="/tmp/pcinet.config"
+eocd_file="/etc/eocd/interface-migraton"
+
+. /etc/templates/oem-vars
+
+mr17g_muxonly(){
+	local file="/sys/class/net/$1/hw_private/muxonly"
+	if [ -f "$file" ]; then
+		local muxonly=`cat $file`
+		[ "$muxonly" = "0" ] && return 1;
+		return 0;
+	else
+		return 0;
+	fi
+}
+
+pci_driver(){
+
+	if [ $# -lt 2 ]; then 
+		echo "$0: not enough parameters"
+		return
+	fi
+
+	local prevdir=`pwd`
+	local type="$1"
+	local dir="/sys/bus/pci/drivers/$1"
+	if [ ! -d "$dir" ]; then
+		# DEBUG # echo "$0: No such directory $dir"
+		return
+	fi
+	cd $dir
+	
+	ifptrn=$2
+	local tmp
+	unset devs
+	tmp=`ls -l | grep "0000:.*->.*pci.*" | awk '{print $(11)}' | \
+			sed 's/\.\.\/.*pci.*\///g' | sed 's/\..*//g'`
+
+	words=`echo $tmp | wc -w`
+	while [ "$words" -gt 0 ]; do
+		unset j	
+	 	j=`echo $tmp | awk '{print $(1)}'`
+		dev=${j#*:}
+		devs="$devs $dev"
+		tmp=`echo $tmp | sed "s/$j//g"`
+		words=`echo $tmp | wc -w`
+	done
+	
+	tmp=""
+	for i in $devs; do
+		unset cnt
+		tmp=`ls -l | grep "$ifptrn.*$i" | awk '{print $(9)}'`
+		tmp=`echo $tmp` # remove \n
+		cnt=`echo $tmp | wc -w | awk '{print $(1)}'`
+		if [ "$cnt" -gt 0 ]; then
+			dname=`echo $i | sed 's/\://g'`
+			slots=`$kdb get sys_pcitbl_slots`
+			$kdb set sys_pcitbl_slots="$slots $dname"
+			$kdb set sys_pcitbl_s${dname}_ifaces="$tmp"
+			$kdb set sys_pcitbl_s${dname}_ifnum="$cnt"
+			$kdb set sys_pcitbl_s${dname}_iftype="$type"
+		fi
+	done
+	cd $prevdir
+
+}
+
+pcicfg_refresh(){
+	local s
+	
+	eval `$kdb sls -q sys_pcitbl_`
+	
+	for s in $slots; do
+		unset curtype cfgtype
+		eval "curtype=\$s${s}_iftype"
+		eval "cfgtype="`$kdb get sys_pcicfg_s${s}_iftype`
+		if [ "$curtype" != "$cfgtype" ]; then
+			# Module type changed on slot s - remove configuration
+			$kdb rm sys_pcicfg_s${s}*
+		fi
+	done
+	
+	nslots=""
+	for s in $slots; do
+		nslots="$nslots \n $s"
+	done
+	slots=`echo -e $nslots | sort`
+	slots=`echo $slots`
+	$kdb set sys_pcitbl_slots="$slots"
+}
+
+
+_move_net_settings(){
+	oif=$1
+	nif=$2
+	echo "Move network settings: $oif --> $nif"	
+	
+	echo "$oif $nif" >> $eocd_file
+	
+	$kdb ls sys_iface_$oif* | sed "s/$oif/$nif/g" >> $tmp_file
+	$kdb rm sys_iface_$oif*
+	
+	# flush old interface cfg
+	tmp=`$ip link show | grep $oif`
+	if [ -n "$tmp" ]; then
+		$ip addr flush $oif
+		$ip link set $oif down
+	fi
+
+	# flush new interface cfg
+	tmp=`$ip link show | grep $nif`
+	if [ -n "$tmp" ]; then
+		$ip addr flush $nif
+		$ip link set $nif down
+	fi
+}
+
+_pci_update_netcfg(){
+	old_iflist=$1
+	new_iflist=$2
+	
+	nif=`echo $new_iflist | awk '{print $(1)}'`
+	oif=`echo $old_iflist | awk '{print $(1)}'`
+
+	if [ "$nif" = "$oif" ]; then
+		return
+	fi
+
+	while [ -n "$old_iflist" ] && [ -n "$new_iflist" ]; do
+		nif=`echo $new_iflist | awk '{print $(1)}'`
+		oif=`echo $old_iflist | awk '{print $(1)}'`
+		new_iflist=`echo $new_iflist | sed "s/$nif//g"`
+		old_iflist=`echo $old_iflist | sed "s/$oif//g"`
+		_move_net_settings $oif $nif
+	done
+}
+
+_pci_commit_netcfg(){
+	local count=`cat $tmp_file | wc -l`
+	local i=1
+	local slots=`$kdb get sys_pcitbl_slots`
+
+	# Remove net config for removed slots
+	cfgslots=`kdb get sys_pcicfg_slots`
+	for s in $slots; do
+		# echo "remove $s slot"
+		cfgslots=`echo $cfgslots | sed "s/$s//g"`
+	done
+	
+	# echo "cfgslots=$cfgslots"
+	for s in $cfgslots; do
+		tmp=`kdb get sys_pcicfg_s${s}_ifaces`
+		# echo "process slot $s: $tmp"
+		[ -z "$tmp" ] && continue
+		for iface in $tmp; do
+			# echo "kdb rm sys_iface_$iface*"
+			kdb rm sys_iface_$iface*
+		done
+		kdb set sys_pcicfg_s${s}_ifaces=""		
+	done
+	kdb set sys_pcicfg_slots="$slots"
+	
+	# Read file line by line & commit to KDB	
+	while [ "$i" -le "$count" ]; do
+		tmp=`cat $tmp_file | head -n $i | tail -n 1`
+		# echo "kdb set \"$tmp\""
+		kdb set "$tmp"
+		i=`expr $i + 1`
+	done
+}
+	
+pcinet_refresh(){
+	local s
+	local slots=`$kdb get sys_pcitbl_slots`
+	echo > $tmp_file
+	echo > $eocd_file
+	
+	for s in $slots; do
+		old_list=`$kdb get sys_pcicfg_s${s}_ifaces`
+		new_list=`$kdb get sys_pcitbl_s${s}_ifaces`
+		if [ -n "$new_list" ] && [ -n "$old_list" ]; then
+			_pci_update_netcfg "${old_list}" "${new_list}"
+		fi
+		$kdb set sys_pcicfg_s${s}_ifaces="${new_list}"
+	done
+	_pci_commit_netcfg
+}
+
+_pci_start(){
+	echo "Refresh PCI device list"
+	$kdb rm sys_pcitbl*
+
+	pci_driver "$mr16g_drvname" "E1_"
+	pci_driver "$mr17g_drvname" "E1_"
+	pci_driver "$mr16h_drvname" "dsl"
+	pci_driver "$mr17h_drvname" "dsl"
+	pci_driver "$mr17s_drvname" "$mr17s_ttyname"
+	pcicfg_refresh
+
+	nifaces=""
+	# Correct Network settings
+	for s in `$kdb get sys_pcitbl_slots`; do
+		# skip RS232 modules
+		type=`$kdb get sys_pcitbl_s${s}_iftype`
+		if [ "$type" = "$mr17s_drvname" ] ;then
+			continue
+		fi
+		for i in `$kdb get sys_pcitbl_s${s}_ifaces`; do
+			if [ "$type" = "$mr17g_drvname" ]; then
+				mr17g_muxonly $i && continue
+			fi
+			nifaces="$nifaces \n $i"
+		done
+	done
+	
+	ifaces=`$kdb get sys_ifaces`
+	for i in $ifaces; do
+		# if this is VLAN interface
+		if echo $i |grep -Eq ".+v[0-9]+"; then
+			# get name of physical interface for VLAN interface
+			phys=${i%%v[0-9]*}
+			
+			# if physical interface exists in interface list, add VLAN interface
+			if echo $nifaces |grep -q $phys; then
+				nifaces="$nifaces \n $i"
+			fi
+		else
+			# add not E1_ and not dsl interfaces
+			if ! echo $i |grep -q "dsl" && ! echo $i |grep -q "E1_"; then
+				nifaces="$nifaces \n $i"
+			fi
+		fi
+	done
+	
+	nifaces=`echo -e $nifaces | sort`
+	nifaces=`echo $nifaces`
+	$kdb set sys_ifaces="$nifaces"
+	
+	# get list of interfaces with multiplexing capability (SHDSL, E1 and RS232)
+	ifaces=`mxconfig -l |awk '{print $1}' |sed 's/://g'`
+	kdb set "sys_mux_ifaces=$ifaces"
+
+	pcinet_refresh
+}
+
+_pci_stop(){
+	return 0
+}
+
+_pci_restart(){
+	_pci_start
+}
+
+case "$1" in
+	start) 
+		_pci_start ;;
+	stop)
+		_pci_stop ;;
+	restart)
+		_pci_restart $2 ;;
+esac
